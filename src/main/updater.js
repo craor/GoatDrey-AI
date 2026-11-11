@@ -1,6 +1,12 @@
 // Автообновление через GitHub Releases (приватный репозиторий craor/GoatDrey-AI).
 // Для приватного репозитория нужен GitHub-токен (PAT) с доступом на чтение: Настройки → Обновления.
-const { app, dialog } = require('electron');
+// macOS: приложение без подписи Apple, а Squirrel.Mac ставит только подписанные обновления. Поэтому на Mac
+// проверяем последний релиз через GitHub API сами, по кнопке качаем .dmg в «Загрузки» и открываем его.
+const { app, dialog, shell } = require('electron');
+const fs = require('fs');
+const path = require('path');
+const IS_MAC = process.platform === 'darwin';
+const RELEASES = 'https://github.com/craor/GoatDrey-AI/releases';
 
 const REPO = { provider: 'github', owner: 'craor', repo: 'GoatDrey-AI', private: true };
 let au = null, getWin = () => null, getToken = () => '', state = { status: 'idle' }, busy = false, notifiedVersion = null;
@@ -52,6 +58,69 @@ function humanize(e) {
   return m.split('\n')[0].slice(0, 200);
 }
 
+/* ---------- macOS ---------- */
+const gh = (url, token, accept = 'application/vnd.github+json') => fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: accept, 'User-Agent': 'GoatDrey-AI', 'X-GitHub-Api-Version': '2022-11-28' }, signal: AbortSignal.timeout(20000) });
+const cmpVer = (a, b) => { const x = String(a).replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0), y = String(b).replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0); return 0; };
+let macRelease = null, macFile = null;
+
+function pickDmg(assets) {
+  const dmgs = (assets || []).filter(a => /\.dmg$/i.test(a.name));
+  return dmgs.find(a => /universal/i.test(a.name)) || dmgs.find(a => a.name.includes(process.arch)) || dmgs[0] || null;
+}
+
+async function checkMac(token) {
+  send({ status: 'checking', error: null });
+  const res = await gh(`https://api.github.com/repos/${REPO.owner}/${REPO.repo}/releases/latest`, token);
+  if (!res.ok) throw new Error(`${res.status} ${res.status === 404 ? 'Not Found' : res.statusText}`);
+  const rel = await res.json();
+  const version = String(rel.tag_name || '').replace(/^v/, '');
+  if (!version || cmpVer(version, app.getVersion()) <= 0) { send({ status: 'latest', version: app.getVersion() }); return; }
+  macRelease = { version, url: rel.html_url || `${RELEASES}/tag/v${version}`, dmg: pickDmg(rel.assets) };
+  send({ status: 'available', version, url: macRelease.url });
+  if (notifiedVersion === version) return;
+  notifiedVersion = version;
+  const w = getWin();
+  const r = await dialog.showMessageBox(w && !w.isDestroyed() ? w : undefined, {
+    type: 'info', buttons: ['Скачать', 'Открыть страницу релиза', 'Позже'], defaultId: 0, cancelId: 2,
+    title: 'GoatDrey AI', message: `Вышел GoatDrey ${version}.`,
+    detail: 'На Mac обновление ставится вручную: скачаю .dmg в «Загрузки» и открою — перетащите GoatDrey AI в «Программы» с заменой.'
+  });
+  if (r.response === 0) downloadMac().catch(e => { send({ status: 'error', error: humanize(e) }); shell.openExternal(macRelease.url); });
+  if (r.response === 1) shell.openExternal(macRelease.url);
+}
+
+async function downloadMac() {
+  const token = (getToken() || '').trim();
+  if (!macRelease?.dmg) { shell.openExternal(macRelease?.url || RELEASES); return; }
+  const { dmg, version } = macRelease;
+  send({ status: 'downloading', version, percent: 0 });
+  const res = await gh(dmg.url, token, 'application/octet-stream');
+  if (!res.ok || !res.body) throw new Error(`Скачивание: HTTP ${res.status}`);
+  const total = +res.headers.get('content-length') || dmg.size || 0;
+  const file = path.join(app.getPath('downloads'), dmg.name);
+  const tmp = file + '.part';
+  const out = fs.createWriteStream(tmp);
+  let got = 0, lastPct = -1;
+  for await (const chunk of res.body) {
+    if (!out.write(chunk)) await new Promise(r => out.once('drain', r));
+    got += chunk.length;
+    const pct = total ? Math.floor(got / total * 100) : 0;
+    if (pct !== lastPct) { lastPct = pct; send({ status: 'downloading', version, percent: pct }); }
+  }
+  await new Promise((resolve, reject) => out.end(err => err ? reject(err) : resolve()));
+  fs.renameSync(tmp, file);
+  macFile = file;
+  send({ status: 'mac-ready', version, file });
+  await shell.openPath(file);
+  const w = getWin();
+  const r = await dialog.showMessageBox(w && !w.isDestroyed() ? w : undefined, {
+    type: 'info', buttons: ['Закрыть GoatDrey', 'Позже'], defaultId: 0, cancelId: 1, title: 'GoatDrey AI',
+    message: `GoatDrey ${version} скачан и открыт.`,
+    detail: 'Закройте GoatDrey, в открывшемся окне перетащите GoatDrey AI в «Программы» и нажмите «Заменить». Если macOS скажет, что приложение повреждено или от неизвестного разработчика, — правый клик по нему → «Открыть».'
+  });
+  if (r.response === 0) setImmediate(() => app.quit());
+}
+
 async function check({ manual = false } = {}) {
   const sp = supported();
   if (!sp.ok) { send({ status: 'unsupported', error: sp.why }); return state; }
@@ -60,6 +129,7 @@ async function check({ manual = false } = {}) {
   if (busy) return state;
   busy = true;
   try {
+    if (IS_MAC) { await checkMac(token); return state; }
     const u = lazy();
     u.setFeedURL({ ...REPO, token });
     await u.checkForUpdates();
@@ -75,6 +145,15 @@ function init(opts) {
   setInterval(() => check().catch(() => {}), 6 * 60 * 60 * 1000).unref?.();
 }
 
-function install() { if (state.status === 'ready' && au) { setImmediate(() => au.quitAndInstall(false, true)); return true; } return false; }
+function install() {
+  if (IS_MAC) {
+    if (macFile && fs.existsSync(macFile)) { shell.openPath(macFile); return true; }
+    if (macRelease) { downloadMac().catch(e => { send({ status: 'error', error: humanize(e) }); shell.openExternal(macRelease.url); }); return true; }
+    return false;
+  }
+  if (state.status === 'ready' && au) { setImmediate(() => au.quitAndInstall(false, true)); return true; }
+  return false;
+}
+function openRelease() { shell.openExternal(macRelease?.url || state.url || RELEASES); return true; }
 
-module.exports = { init, check, install, getState: () => state };
+module.exports = { init, check, install, openRelease, getState: () => state };

@@ -72,6 +72,11 @@ async function ollamaDelete(model, base) {
 function sysInfo() {
   return new Promise(resolve => {
     const base = { ramGB: Math.round(os.totalmem() / 2 ** 30), cpus: os.cpus().length, cpu: os.cpus()[0]?.model?.trim() || '', gpus: [] };
+    if (process.platform === 'darwin') {
+      // Apple Silicon: видеопамять общая с ОЗУ — Ollama может отдать модели примерно 2/3 памяти (Metal).
+      if (process.arch === 'arm64' || /apple/i.test(base.cpu)) base.gpus = [{ name: (base.cpu || 'Apple Silicon') + ' (общая память)', vramGB: Math.round(base.ramGB * 0.66), unified: true }];
+      return resolve(base);
+    }
     if (process.platform !== 'win32') return resolve(base);
     // AdapterRAM — 32-битное поле и врёт для карт >4 ГБ; берём qwMemorySize из реестра, если есть.
     const ps = `$ErrorActionPreference='SilentlyContinue'; $r=@(); Get-ItemProperty 'HKLM:\\SYSTEM\\ControlSet001\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\0*' | ForEach-Object { if ($_.DriverDesc) { $r += [pscustomobject]@{ name=$_.DriverDesc; vram=[int64]$_.'HardwareInformation.qwMemorySize' } } }; if (-not $r.Count) { Get-CimInstance Win32_VideoController | ForEach-Object { $r += [pscustomobject]@{ name=$_.Name; vram=[int64]$_.AdapterRAM } } }; $r | ConvertTo-Json -Compress`;
@@ -88,7 +93,9 @@ function recommend(info) {
   const budget = Math.max(vram, (info.ramGB || 8) * 0.6);
   const fits = SUGGESTED.filter(s => s.ram <= budget + 0.5 && s.id !== 'qwen2.5:0.5b');
   const best = vram >= 16 ? 'gpt-oss:20b' : fits.some(s => s.id === 'qwen2.5:7b') ? 'qwen2.5:7b' : fits.length ? fits[fits.length - 1].id : 'qwen2.5:0.5b';
-  const text = vram >= 16 ? `Видеокарта на ${vram} ГБ — потянет даже gpt-oss:20b.`
+  const unified = (info.gpus || []).some(g => g.unified);
+  const text = unified ? `Mac на Apple Silicon с ${info.ramGB} ГБ общей памяти — модели работают на GPU (Metal). ` + (vram >= 16 ? 'Потянет даже gpt-oss:20b.' : vram >= 8 ? '7–8B модели пойдут бодро.' : 'Берите лёгкие модели (3B).')
+    : vram >= 16 ? `Видеокарта на ${vram} ГБ — потянет даже gpt-oss:20b.`
     : vram >= 8 ? `Видеокарта на ${vram} ГБ — 7–8B модели полетят. gpt-oss:20b будет медленно.`
     : (info.ramGB || 0) >= 16 ? `Мощной видеокарты не видно, но ОЗУ ${info.ramGB} ГБ — 7B модели пойдут на процессоре, неспешно.`
     : `ОЗУ ${info.ramGB} ГБ — берите лёгкие модели (3B). Большие будут тормозить.`;

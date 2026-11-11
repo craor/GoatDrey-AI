@@ -1,8 +1,8 @@
 {
   "name": "goatdrey-ai",
   "productName": "GoatDrey AI",
-  "version": "1.1.1",
-  "description": "GoatDrey AI — настольный помощник для Windows 10/11: чат, поиск, управление ПК. Думает на вашем ПК (Ollama) или через любой ключ API.",
+  "version": "1.2.0",
+  "description": "GoatDrey AI — настольный помощник для Windows 10/11 и macOS: чат, поиск, управление компьютером. Думает на вашем компьютере (Ollama) или через любой ключ API.",
   "main": "src/main/main.js",
   "author": "GoatDrey",
   "license": "UNLICENSED",
@@ -19,7 +19,9 @@
     "smoke:providers": "node scripts/smoke-providers.js",
     "smoke:ollama": "node scripts/smoke-ollama.js",
     "dist:win-portable": "electron-builder --win portable --x64 --publish never",
-    "release:win": "electron-builder --win nsis --x64 --publish always"
+    "release:win": "electron-builder --win nsis --x64 --publish always",
+    "dist:mac": "electron-builder --mac dmg zip --universal --publish never",
+    "icons:mac": "python3 -c \"from PIL import Image;im=Image.open('assets/icon/icon-1024.png');im.save('assets/icon/icon.icns')\""
   },
   "build": {
     "appId": "ai.goatdrey.desktop",
@@ -76,6 +78,56 @@
     },
     "portable": {
       "artifactName": "GoatDrey-AI-${version}-portable.exe"
+    },
+    "mac": {
+      "icon": "assets/icon/icon.icns",
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "minimumSystemVersion": "11.0",
+      "darkModeSupport": true,
+      "artifactName": "GoatDrey-AI-${version}-mac-${arch}.${ext}",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "GoatDrey слушает микрофон только когда вы нажали кнопку голосового ввода.",
+        "NSAppleEventsUsageDescription": "GoatDrey управляет программами (System Events) только в режиме «Компьютер» и с вашего разрешения.",
+        "LSApplicationCategoryType": "public.app-category.productivity"
+      }
+    },
+    "dmg": {
+      "title": "GoatDrey AI ${version}",
+      "artifactName": "GoatDrey-AI-${version}-mac-${arch}.${ext}",
+      "contents": [
+        {
+          "x": 140,
+          "y": 200,
+          "type": "file"
+        },
+        {
+          "x": 400,
+          "y": 200,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ],
+      "window": {
+        "width": 540,
+        "height": 400
+      }
     },
     "afterPack": "scripts/after-pack.js",
     "publish": [

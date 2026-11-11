@@ -377,3 +377,14 @@ kbd { font: 500 11px var(--mono); padding: 1px 5px; border: 1px solid var(--bord
 .gallery.real figure:hover .fig-actions { opacity: 1; }
 .fig-actions button { width: 26px; height: 26px; display: grid; place-items: center; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); color: var(--text); }
 .fig-actions button:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ---------- macOS: «светофор» в шапке, перетаскивание окна ---------- */
+.platform-darwin .brand { padding-top: 46px; -webkit-app-region: drag; }
+.platform-darwin .topbar { -webkit-app-region: drag; }
+.platform-darwin .topbar button, .platform-darwin .topbar select, .platform-darwin .topbar .title, .platform-darwin .topbar .segmented, .platform-darwin .brand * { -webkit-app-region: no-drag; }
+.platform-darwin .app.collapsed .topbar { padding-left: 84px; }
+@media (max-width: 760px) { .platform-darwin .topbar { padding-left: 84px; } }
+.perms { display: grid; gap: 6px; margin: 4px 0 8px; }
+.perm { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-m); background: var(--surface); }
+.perm > span { flex: 1; display: flex; flex-direction: column; }
+.perm.bad { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }

@@ -24,9 +24,31 @@ const short = m => String(m || '').replace(/^.*\//, '');
 async function refreshSettings() { S.settings = await gd.settings.get(); }
 
 /* ================== Инициализация ================== */
+const isMac = () => S.settings?.platform === 'darwin';
+const osName = () => isMac() ? 'macOS' : S.settings?.platform === 'win32' ? 'Windows' : 'Linux';
+/** macOS: ⌘ вместо Ctrl в подсказках и класс для «светофора» в шапке. */
+function applyPlatform() {
+  document.body.classList.add('platform-' + S.settings.platform);
+  if (!isMac()) return;
+  $$('kbd').forEach(k => { k.textContent = k.textContent.replace(/\bCtrl\s*/g, '⌘').replace(/\bShift\s*/g, '⇧'); });
+  $$('[title]').forEach(el => { el.title = el.title.replace(/\(Ctrl\s*/g, '(⌘'); });
+}
+/** Разрешения macOS для режима «Компьютер». Возвращает HTML-подсказку или ''. */
+async function macPermsHtml() {
+  if (!isMac()) return '';
+  const p = await gd.pc.permissions();
+  const row = (ok, name, kind, what) => `<div class="perm ${ok ? 'ok' : 'bad'}"><i class="dot ${ok ? 'ok' : 'bad'}"></i><span><b>${name}</b><small class="muted">${what}</small></span>${ok ? '<span class="badge done">есть</span>' : `<button class="btn" data-perm="${kind}">Открыть настройки</button>`}</div>`;
+  return `<div class="perms">${row(p.accessibility, 'Универсальный доступ', 'accessibility', 'мышь и клавиатура')}${row(p.screen === 'granted', 'Запись экрана', 'screen', 'скриншоты, чтобы видеть, куда кликать')}
+    <p class="muted small" style="margin:6px 0 0">macOS: Системные настройки → Конфиденциальность и безопасность → включите GoatDrey AI в «Универсальный доступ» и «Запись экрана». При первом действии macOS ещё спросит про управление «System Events» — нажмите «Разрешить». После включения перезапустите GoatDrey. ${p.accessibility && p.screen === 'granted' ? '' : '<a href="#" data-perm="relaunch">Перезапустить сейчас</a>'}</p></div>`;
+}
+function bindPerms(root) {
+  root.querySelectorAll('[data-perm]').forEach(b => b.addEventListener('click', e => { e.preventDefault(); if (b.dataset.perm === 'relaunch') gd.relaunch(); else { gd.pc.openPrefs(b.dataset.perm); toast('Включите GoatDrey AI в списке, потом перезапустите программу'); } }));
+}
+
 async function init() {
   hydrateIcons();
   S.settings = await gd.settings.get();
+  applyPlatform();
   S.presets = await gd.providers.presets();
   S.data = await gd.chats.get();
   S.data.chats ||= []; S.data.folders ||= [];
@@ -37,7 +59,7 @@ async function init() {
   gd.ai.onDelta(onDelta);
   gd.local.onProgress(onPullProgress);
   gd.media.onProgress(d => { const j = S.mediaJobs[d.jobId]; if (j) { j.text = d.text; if (S.view === 'media') $('#vidStatus') && ($('#vidStatus').textContent = d.text); } });
-  gd.onCommand(c => c === 'new-chat' && newChat());
+  gd.onCommand(c => { if (c === 'new-chat') newChat(); else if (c === 'settings') setView('settings'); });
   bindUI();
   renderSidebar();
   renderModels();
@@ -220,6 +242,12 @@ async function setMode(mode, { byUser = false } = {}) {
       ? `${icon('cursor', 14)} <span><b>Компьютер</b> — могу двигать мышь и печатать. Опасное спрошу заранее. Журнал — слева.</span>`
       : `${icon('shield', 14)} <span><b>Компьютер</b> выключен. <a href="#" id="pcEnable">Включить управление ПК</a> или открыть <a href="#" id="toSettings">настройки</a>.</span>`;
     note.classList.remove('hidden');
+    if (isMac() && S.settings.pcControlEnabled) gd.pc.permissions().then(p => {
+      if (S.mode !== 'desktop' || (p.accessibility && p.screen === 'granted')) return;
+      const miss = [!p.accessibility && 'Универсальный доступ', p.screen !== 'granted' && 'Запись экрана'].filter(Boolean).join(' и ');
+      note.innerHTML = `${icon('shield', 14)} <span><b>Компьютер</b> — macOS ещё не дала разрешения: ${miss}. ${!p.accessibility ? '<a href="#" data-perm="accessibility">Открыть «Универсальный доступ»</a>' : ''} ${p.screen !== 'granted' ? '<a href="#" data-perm="screen">Открыть «Запись экрана»</a>' : ''} — включите GoatDrey AI и <a href="#" data-perm="relaunch">перезапустите</a>.</span>`;
+      bindPerms(note);
+    });
     $('#toSettings')?.addEventListener('click', e => { e.preventDefault(); setView('settings'); });
     $('#pcEnable')?.addEventListener('click', e => { e.preventDefault(); enablePcNow(); });
   } else note.classList.add('hidden');
@@ -315,7 +343,7 @@ function scheduleRender(m) { if (rafPending) return; rafPending = true; requestA
 function systemPrompt(mode) {
   const now = new Date();
   let p = `Ты — GoatDrey, помощник в настольном приложении GoatDrey AI. Характер: спокойный, уверенный, умный, с лёгким сухим юмором (редко и к месту). Отвечай на языке пользователя, по умолчанию по-русски. Пиши ясно и по делу, без воды и пафоса, используй Markdown (списки, код, таблицы) когда это помогает. Сегодня ${now.toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}, время ${now.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}. Не выдумывай факты: если не знаешь — так и скажи.`;
-  if (mode === 'desktop' && S.settings.pcControlEnabled) p += `\n\nСейчас включён режим «Компьютер»: ты управляешь ПК пользователя (${S.settings.platform === 'win32' ? 'Windows' : S.settings.platform}) ТОЛЬКО через функции: open_app, type_text, key_press, mouse_click, mouse_move, scroll, screenshot, open_url, close_app. Других инструментов (веб-поиска, браузера, python) у тебя нет — не вызывай их. Работай пошагово и коротко. Чтобы запустить программу, вызови open_app (например name="notepad" для Блокнота, "calc" для калькулятора), после запуска окно активно — сразу печатай через type_text. screenshot делай, только когда нужно понять, куда кликать. Объясняй коротко, что делаешь. Объясняй коротко, что делаешь. Опасные действия пользователь подтверждает сам. Никогда не вводи пароли и платёжные данные. Когда задача выполнена — коротко отчитайся.`;
+  if (mode === 'desktop' && S.settings.pcControlEnabled) p += `\n\nСейчас включён режим «Компьютер»: ты управляешь ПК пользователя (${osName()}) ТОЛЬКО через функции: open_app, type_text, key_press, mouse_click, mouse_move, scroll, screenshot, open_url, close_app. Других инструментов (веб-поиска, браузера, python) у тебя нет — не вызывай их. Работай пошагово и коротко. Чтобы запустить программу, вызови open_app (${isMac() ? 'например name="TextEdit" для текстового редактора, "Calculator" для калькулятора, "Safari" или "Google Chrome" для браузера; сочетания клавиш на Mac — через cmd, например "cmd+c", "cmd+v", "cmd+space" (Spotlight), "cmd+tab"' : 'например name="notepad" для Блокнота, "calc" для калькулятора'}), после запуска окно активно — сразу печатай через type_text. screenshot делай, только когда нужно понять, куда кликать. Объясняй коротко, что делаешь. Объясняй коротко, что делаешь. Опасные действия пользователь подтверждает сам. Никогда не вводи пароли и платёжные данные. Когда задача выполнена — коротко отчитайся.`;
   if (S.settings.systemPrompt) p += '\n\nДополнительно от пользователя: ' + S.settings.systemPrompt;
   return p;
 }
@@ -456,7 +484,7 @@ function explainError(e) {
   if (/tool choice is none|called a tool|tool call validation|not in request\.tools|attempted to call tool/i.test(msg)) return { title: 'Модель перепутала инструменты', text: 'Она попыталась вызвать функцию, которой нет в этом режиме. Нажмите «Повторить» или выберите другую модель сверху.', action: 'retry', actionLabel: 'Повторить' };
   if (/NO_KEY/.test(msg)) return { title: 'Нет ключа', text: 'Без ключа я как козёл без горы. Добавьте ключ любого провайдера или включите локальную модель — это минута.', action: 'settings', actionLabel: 'Открыть настройки' };
   if (/NO_MODEL/.test(msg)) return { title: 'Модель не выбрана', text: p.local ? 'Скачайте модель в настройках (раздел «На этом компьютере») или выберите сверху.' : 'Выберите модель сверху или в настройках.', action: 'settings', actionLabel: 'Открыть настройки' };
-  if (p.local && /OLLAMA_DOWN|ECONNREFUSED|fetch failed|connect/i.test(msg)) return { title: `${name} не отвечает`, text: p.provider === 'ollama' ? 'Похоже, Ollama не запущена. Запустите её (значок ламы в трее) или установите с ollama.com — и повторите.' : 'Запустите локальный сервер (LM Studio → Developer → Start Server) и повторите.', action: 'settings', actionLabel: 'Проверить' };
+  if (p.local && /OLLAMA_DOWN|ECONNREFUSED|fetch failed|connect/i.test(msg)) return { title: `${name} не отвечает`, text: p.provider === 'ollama' ? `Похоже, Ollama не запущена. Запустите её (значок ламы ${isMac() ? 'в строке меню' : 'в трее'}) или установите с ollama.com — и повторите.` : 'Запустите локальный сервер (LM Studio → Developer → Start Server) и повторите.', action: 'settings', actionLabel: 'Проверить' };
   if (p.local && /not found|pull/i.test(msg)) return { title: 'Модели нет на компьютере', text: 'Её нужно скачать: Настройки → На этом компьютере → «Скачать».', action: 'settings', actionLabel: 'К моделям' };
   if (/401|403|invalid api key|invalid_api_key|incorrect api key|unauthori[sz]ed|permission/i.test(msg)) return { title: 'Ключ не подошёл', text: `${name} его не принял: ${msg.slice(0, 160)}`, action: 'settings', actionLabel: 'Проверить ключ' };
   if (/429|rate limit|quota|insufficient/i.test(msg)) return { title: `${name} просит передышку`, text: 'Упёрлись в лимит или закончились деньги на счёте. Подождите или выберите другую модель/провайдера сверху.', action: 'retry', actionLabel: 'Попробовать снова' };
@@ -534,7 +562,7 @@ async function toggleMic() {
   if (!stt) return webSpeech(btn);
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-  catch { toast('Микрофон недоступен — проверьте разрешения Windows', true); return; }
+  catch { toast(isMac() ? 'Микрофон недоступен — Системные настройки → Конфиденциальность и безопасность → Микрофон → GoatDrey AI' : 'Микрофон недоступен — проверьте разрешения Windows', true); return; }
   const chunks = []; const rec = new MediaRecorder(stream, { mimeType: 'audio/webm' });
   rec.ondataavailable = e => e.data.size && chunks.push(e.data);
   rec.onstop = async () => {
@@ -571,7 +599,7 @@ function speak(text) {
   const u = new SpeechSynthesisUtterance(plain(text).slice(0, 4000));
   u.lang = 'ru-RU';
   const v = speechSynthesis.getVoices().find(v => /^ru/i.test(v.lang));
-  if (v) u.voice = v; else toast('Русского голоса в системе нет — Windows: Параметры → Время и язык → Речь');
+  if (v) u.voice = v; else toast(isMac() ? 'Русского голоса нет — Системные настройки → Универсальный доступ → Устный контент → Голос системы → Управлять голосами → Русский' : 'Русского голоса в системе нет — Windows: Параметры → Время и язык → Речь');
   u.rate = 1.02;
   speechSynthesis.speak(u);
 }
@@ -788,9 +816,10 @@ function renderSettings() {
     ${sw('pcControlEnabled', 'Разрешить управлять компьютером', 'Режим «Компьютер» в чате')}
     ${sw('confirmRisky', 'Спрашивать перед опасными действиями', 'Закрыть программу, ввести пароль, удалить — всегда. Это не выключается.', { disabled: true })}
     ${sw('confirmAll', 'Спрашивать вообще перед каждым действием', 'Для особо осторожных. Медленнее, зато спокойно')}
+    ${s.platform === 'darwin' ? '<div id="macPerms"></div>' : ''}
     <div class="field"><button class="btn" id="openLog">${icon('log', 14)} Журнал действий</button><button class="btn danger" id="clearLog">${icon('trash', 14)} Очистить журнал</button></div>
   </div></div>
-  <div class="section"><div><h3>Голос</h3><div class="desc" id="voiceDesc">Ввод — Whisper (Groq или OpenAI), без ключа — распознавание системы. Озвучка — голосом Windows.</div></div><div>
+  <div class="section"><div><h3>Голос</h3><div class="desc" id="voiceDesc">Ввод — Whisper (Groq или OpenAI), без ключа — распознавание системы. Озвучка — голосом ${isMac() ? 'macOS' : 'Windows'}.</div></div><div>
     ${sw('voiceEnabled', 'Голосовой ввод', 'Кнопка микрофона в поле ввода')}
     ${sw('ttsAutoplay', 'Читать ответы вслух сразу', 'Иначе — по кнопке «Озвучить»')}
   </div></div>
@@ -799,10 +828,10 @@ function renderSettings() {
   </div></div>
   <div class="section"><div><h3>Система</h3></div><div>
     <div class="field"><span class="muted">Язык</span><select class="select" id="setLang"><option value="ru" ${s.language === 'ru' ? 'selected' : ''}>Русский</option><option value="en" ${s.language === 'en' ? 'selected' : ''}>English (только ответы)</option></select></div>
-    ${sw('launchAtStartup', 'Запускать вместе с Windows', s.platform === 'win32' ? '' : 'Работает в Windows-версии')}
+    ${sw('launchAtStartup', s.platform === 'darwin' ? 'Открывать при входе в систему' : 'Запускать вместе с Windows', s.platform === 'win32' || s.platform === 'darwin' ? '' : 'Работает в Windows и macOS')}
     <div class="field"><button class="btn" id="openData">Папка с данными</button><button class="btn" id="replayOnboard">Показать знакомство ещё раз</button></div>
   </div></div>
-  <div class="section" id="sec-update"><div><h3>Обновления</h3><div class="desc">Новые версии приходят из приватного GitHub-репозитория craor/GoatDrey-AI. Для доступа нужен ваш GitHub-токен — он хранится только на этом компьютере.</div></div><div>
+  <div class="section" id="sec-update"><div><h3>Обновления</h3><div class="desc">Новые версии приходят из приватного GitHub-репозитория craor/GoatDrey-AI. Для доступа нужен ваш GitHub-токен — он хранится только на этом компьютере.${s.platform === 'darwin' ? ' На Mac программа без подписи Apple, поэтому новую версию я скачаю (.dmg) и открою, а перетащить её в «Программы» нужно самому.' : ''}</div></div><div>
     <div class="field"><input class="input mono" type="password" id="updToken" style="flex:1" placeholder="${s.hasUpdateToken ? 'Токен сохранён ✓ — вставьте новый, чтобы заменить' : 'github_pat_… или ghp_…'}" spellcheck="false" autocomplete="off"><button class="btn" id="updSave">Сохранить</button>${s.hasUpdateToken ? '<button class="btn danger" id="updClear">Убрать</button>' : ''}</div>
     <div class="field"><button class="btn primary" id="updCheck">${icon('retry', 14)} Проверить обновления</button><button class="btn" id="updHelp">Как получить токен</button></div>
     <div class="status" id="updStatus">${s.hasUpdateToken ? 'Проверяю сам при запуске и раз в 6 часов.' : 'Без токена обновления из приватного репозитория не работают.'}</div>
@@ -841,7 +870,8 @@ function renderSettings() {
   v.querySelector('#updCheck').onclick = async () => { renderUpdate({ status: 'checking' }); renderUpdate(await gd.update.check()); };
   v.querySelector('#updHelp').onclick = () => gd.open('https://github.com/settings/personal-access-tokens/new');
   gd.update.state().then(st => st && st.status !== 'idle' && renderUpdate(st));
-  gd.ai.stt().then(n => { const d = $('#voiceDesc'); if (d) d.textContent = n ? `Ввод — ${n}. Озвучка — голосом Windows.` : 'Ввод — распознавание системы (нужен интернет). Точнее будет с ключом Groq или OpenAI (Whisper). Озвучка — голосом Windows.'; });
+  if (isMac()) macPermsHtml().then(html => { const el = $('#macPerms'); if (el) { el.innerHTML = html; bindPerms(el); } });
+  gd.ai.stt().then(n => { const d = $('#voiceDesc'); const os = isMac() ? 'macOS' : 'Windows'; if (d) d.textContent = n ? `Ввод — ${n}. Озвучка — голосом ${os}.` : `Ввод — распознавание системы (нужен интернет). Точнее будет с ключом Groq или OpenAI (Whisper). Озвучка — голосом ${os}.`; });
   gd.media.providers().then(list => { const el = $('#mediaCaps'); if (!el) return; const im = list.filter(x => x.kind === 'image'), vi = list.filter(x => x.kind === 'video'); el.textContent = (im.length ? `Рисует: ${im.map(x => x.name).join(', ')}.` : 'Рисовать пока некому — нужен ключ OpenAI, xAI, MiniMax или Together.') + ' ' + (vi.length ? `Видео: ${vi.map(x => x.name).join(', ')}.` : 'Видео — с ключом MiniMax.'); });
   renderLocal();
 }
@@ -849,9 +879,14 @@ function renderSettings() {
 /* ---------- Обновления ---------- */
 function renderUpdate(st) {
   const el = $('#updStatus'); if (!el || !st) return;
-  const T = { checking: 'Спрашиваю GitHub…', latest: `У вас последняя версия${st.version ? ' (' + st.version + ')' : ''}.`, downloading: `Качаю ${st.version || 'обновление'}… ${st.percent || 0}%`, ready: `Версия ${st.version} скачана — поставлю при перезапуске.`, 'no-token': st.error, unsupported: st.error, error: 'Не вышло: ' + (st.error || 'неизвестная ошибка') };
+  const T = { checking: 'Спрашиваю GitHub…', latest: `У вас последняя версия${st.version ? ' (' + st.version + ')' : ''}.`, downloading: `Качаю ${st.version || 'обновление'}… ${st.percent || 0}%`, ready: `Версия ${st.version} скачана — поставлю при перезапуске.`, available: `Вышла версия ${st.version}.`, 'mac-ready': `Версия ${st.version} в «Загрузках» — перетащите GoatDrey AI в «Программы» с заменой.`, 'no-token': st.error, unsupported: st.error, error: 'Не вышло: ' + (st.error || 'неизвестная ошибка') };
   el.textContent = T[st.status] || '';
   el.classList.toggle('bad', st.status === 'error');
+  if (st.status === 'available' || st.status === 'mac-ready') {
+    el.insertAdjacentHTML('beforeend', ` <a href="#" id="updGet">${st.status === 'available' ? 'Скачать .dmg' : 'Открыть .dmg'}</a> · <a href="#" id="updPage">страница релиза</a>`);
+    $('#updGet').onclick = e => { e.preventDefault(); gd.update.install(); };
+    $('#updPage').onclick = e => { e.preventDefault(); gd.update.openRelease(); };
+  }
 }
 if (window.gd?.update) gd.update.onStatus(st => { renderUpdate(st); if (st.status === 'ready') toast(`Скачал GoatDrey ${st.version}. Обновлюсь при перезапуске.`); });
 
@@ -868,7 +903,7 @@ async function renderLocal(fresh = true) {
   box.innerHTML = `
     <div class="local-head"><i class="dot ${ollama.running ? 'ok' : 'bad'}"></i><b>Ollama</b><span class="status">${ollama.running ? `работает · v${esc(ollama.version)} · моделей: ${ollama.models.length}` : 'не найдена или не запущена'}</span>
       ${ollama.running ? '' : `<button class="btn primary" data-l="download">${icon('download', 14)} Скачать Ollama</button>`}<button class="btn" data-l="refresh">${icon('retry', 14)} Проверить</button></div>
-    ${ollama.running ? '' : '<p class="muted small">Установите Ollama с ollama.com (Windows 10/11, ~1 ГБ), запустите — значок ламы появится в трее. Потом нажмите «Проверить» и скачайте модель ниже.</p>'}
+    ${ollama.running ? '' : `<p class="muted small">${isMac() ? 'Установите Ollama с ollama.com (macOS 12+, Apple Silicon и Intel): откройте скачанный архив, перетащите Ollama в «Программы» и запустите — значок ламы появится в строке меню. Или в Терминале: <span class="mono">brew install ollama</span>.' : 'Установите Ollama с ollama.com (Windows 10/11, ~1 ГБ), запустите — значок ламы появится в трее.'} Потом нажмите «Проверить» и скачайте модель ниже.</p>`}
     <div class="hw"><span class="mono">ОЗУ ${sys.ramGB} ГБ · ${sys.cpus} потоков${gpus ? ' · ' + esc(gpus) : ''}</span><span>${esc(rec.text)}</span></div>
     ${ollama.models.length ? `<div class="mlist"><div class="group-label">Скачаны</div>${ollama.models.map(m => `<div class="mrow"><div><b class="mono">${esc(m.name)}</b><small class="muted">${fmtGB(m.size)}${m.params ? ' · ' + esc(m.params) : ''}${m.caps.includes('tools') ? ' · <span class="tag">функции</span>' : ' · <span class="tag dim">без функций → JSON</span>'}${m.caps.includes('vision') ? ' <span class="tag">видит</span>' : ''}${m.caps.includes('thinking') ? ' <span class="tag">думает</span>' : ''}</small></div>
       ${op && op.id === S.settings.activeProfile && op.model === m.name ? '<span class="badge done">сейчас</span>' : `<button class="btn" data-l="use" data-m="${esc(m.name)}">Использовать</button>`}${m.caps.includes('vision') ? `<button class="btn" data-l="vision" data-m="${esc(m.name)}" title="Смотреть картинки и скриншоты этой моделью">Для картинок</button>` : ''}<button class="icon-btn" data-l="rm" data-m="${esc(m.name)}" title="Удалить с диска">${icon('trash', 14)}</button></div>`).join('')}</div>` : ''}
@@ -887,7 +922,7 @@ async function renderLocal(fresh = true) {
   box.onclick = async e => {
     const b = e.target.closest('[data-l]'); if (!b) return;
     const m = b.dataset.m, a = b.dataset.l;
-    if (a === 'download') gd.open('https://ollama.com/download');
+    if (a === 'download') gd.open(isMac() ? 'https://ollama.com/download/mac' : 'https://ollama.com/download');
     if (a === 'refresh') { box.querySelector('.local-head .status').textContent = 'Проверяю…'; await renderLocal(); if (S.local.ollama.running) { await checkKey(); renderLocal(false); } }
     if (a === 'use' || a === 'vision') {
       const id = op?.id || (await gd.profiles.save({ provider: 'ollama', name: 'Локально (Ollama)' })).id;

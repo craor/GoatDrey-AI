@@ -1,5 +1,5 @@
 // GoatDrey AI — main-процесс Electron.
-const { app, BrowserWindow, ipcMain, Tray, Menu, nativeTheme, dialog, shell, desktopCapturer, screen, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeTheme, dialog, shell, desktopCapturer, screen, nativeImage, systemPreferences } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { Store } = require('./store');
@@ -13,7 +13,8 @@ const pc = require('./pc');
 const updater = require('./updater');
 
 const ROOT = path.join(__dirname, '..', '..');
-const ICON_PNG = path.join(ROOT, 'assets', 'icon', process.platform === 'win32' ? 'icon.ico' : 'icon-256.png');
+const IS_MAC = process.platform === 'darwin';
+const ICON_PNG = path.join(ROOT, 'assets', 'icon', process.platform === 'win32' ? 'icon.ico' : IS_MAC ? 'icon-512.png' : 'icon-256.png');
 const TRAY_PNG = path.join(ROOT, 'assets', 'icon', 'icon-32.png');
 
 let win, tray, store, media;
@@ -35,6 +36,8 @@ function createWindow() {
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#141210' : '#F4F1EA',
     autoHideMenuBar: true,
     show: false,
+    // macOS: «светофор» поверх нашей шапки, как в Linear/Things.
+    ...(IS_MAC ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 18 } } : {}),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: false, spellcheck: true }
   });
   win.loadFile(path.join(ROOT, 'src', 'renderer', 'index.html'));
@@ -51,9 +54,49 @@ function createWindow() {
   if (process.argv.includes('--dev')) win.webContents.openDevTools({ mode: 'detach' });
 }
 
+/** macOS: русское меню приложения — без него не работают Cmd+C/V/Z/Q. */
+function createMacMenu() {
+  if (!IS_MAC) return;
+  const send = cmd => () => { win?.show(); win?.webContents.send('app:command', cmd); };
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { label: 'GoatDrey AI', submenu: [
+      { role: 'about', label: 'О GoatDrey AI' }, { type: 'separator' },
+      { label: 'Настройки…', accelerator: 'Cmd+,', click: send('settings') }, { type: 'separator' },
+      { role: 'hide', label: 'Скрыть GoatDrey AI' }, { role: 'hideOthers', label: 'Скрыть остальные' }, { role: 'unhide', label: 'Показать все' }, { type: 'separator' },
+      { role: 'quit', label: 'Завершить GoatDrey AI' }] },
+    { label: 'Файл', submenu: [{ label: 'Новый чат', accelerator: 'Cmd+N', click: send('new-chat') }, { type: 'separator' }, { role: 'close', label: 'Закрыть окно' }] },
+    { label: 'Правка', submenu: [
+      { role: 'undo', label: 'Отменить' }, { role: 'redo', label: 'Повторить' }, { type: 'separator' },
+      { role: 'cut', label: 'Вырезать' }, { role: 'copy', label: 'Скопировать' }, { role: 'paste', label: 'Вставить' }, { role: 'pasteAndMatchStyle', label: 'Вставить без форматирования' },
+      { role: 'selectAll', label: 'Выбрать всё' }] },
+    { label: 'Вид', submenu: [{ role: 'resetZoom', label: 'Обычный размер' }, { role: 'zoomIn', label: 'Крупнее' }, { role: 'zoomOut', label: 'Мельче' }, { type: 'separator' }, { role: 'togglefullscreen', label: 'Во весь экран' }] },
+    { label: 'Окно', submenu: [{ role: 'minimize', label: 'Свернуть' }, { role: 'zoom', label: 'Изменить масштаб' }, { type: 'separator' }, { role: 'front', label: 'Все окна — вперёд' }] }
+  ]));
+}
+
+/* ---------- Разрешения macOS ---------- */
+const MAC_PREFS = {
+  accessibility: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
+  screen: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
+  automation: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
+  microphone: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone'
+};
+function macPermissions() {
+  if (!IS_MAC) return { platform: process.platform, accessibility: true, screen: 'granted', microphone: 'granted' };
+  let accessibility = false, scr = 'unknown', mic = 'unknown';
+  try { accessibility = systemPreferences.isTrustedAccessibilityClient(false); } catch {}
+  try { scr = systemPreferences.getMediaAccessStatus('screen'); } catch {}
+  try { mic = systemPreferences.getMediaAccessStatus('microphone'); } catch {}
+  return { platform: 'darwin', accessibility, screen: scr, microphone: mic };
+}
+const NEEDS_ACCESSIBILITY = new Set(['mouse_move', 'mouse_click', 'scroll', 'type_text', 'key_press']);
+const ACCESS_MSG = 'Нужно разрешение macOS «Универсальный доступ»: Системные настройки → Конфиденциальность и безопасность → Универсальный доступ → включите GoatDrey AI. Потом перезапустите GoatDrey.';
+const SCREEN_MSG = 'Нужно разрешение macOS «Запись экрана»: Системные настройки → Конфиденциальность и безопасность → Запись экрана и системного аудио → включите GoatDrey AI и перезапустите программу.';
+
 function createTray() {
   try {
-    const img = nativeImage.createFromPath(TRAY_PNG);
+    let img = nativeImage.createFromPath(TRAY_PNG);
+    if (IS_MAC && !img.isEmpty()) img = img.resize({ width: 18, height: 18 });
     tray = new Tray(img.isEmpty() ? nativeImage.createEmpty() : img);
     tray.setToolTip('GoatDrey AI');
     tray.setContextMenu(Menu.buildFromTemplate([
@@ -148,6 +191,11 @@ function presetsPublic() {
 }
 
 async function takeScreenshot() {
+  if (IS_MAC && macPermissions().screen !== 'granted') {
+    // Первый запрос сам добавит GoatDrey в список «Запись экрана»; без разрешения macOS отдаёт только обои.
+    try { await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1, height: 1 } }); } catch {}
+    if (macPermissions().screen !== 'granted') throw new Error(SCREEN_MSG);
+  }
   const d = screen.getPrimaryDisplay();
   const { width, height } = d.size;
   const scale = Math.min(1, 1600 / width);
@@ -353,11 +401,25 @@ function registerIpc() {
 
   /* --- Управление ПК --- */
   ipcMain.handle('pc:classify', (e, { action, args }) => pc.classify(action, args));
+  ipcMain.handle('pc:permissions', () => macPermissions());
+  ipcMain.handle('pc:openPrefs', (e, kind) => {
+    if (!IS_MAC) return false;
+    if (kind === 'accessibility') { try { systemPreferences.isTrustedAccessibilityClient(true); } catch {} } // macOS сам добавит программу в список
+    if (kind === 'screen') desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1, height: 1 } }).catch(() => {});
+    shell.openExternal(MAC_PREFS[kind] || MAC_PREFS.accessibility);
+    return true;
+  });
+  ipcMain.handle('app:relaunch', () => { app.relaunch(); app.exit(0); });
   ipcMain.handle('pc:exec', async (e, { action, args, confirmed }) => {
     const s = store.getSettings();
     if (!s.pcControlEnabled) { store.logAction({ action, args, status: 'blocked', note: 'Управление ПК выключено' }); throw new Error('Управление ПК выключено в настройках'); }
     const risk = pc.classify(action, args);
     if ((risk.level === 'risky' || s.confirmAll) && !confirmed) { store.logAction({ action, args, status: 'blocked', note: 'Нет подтверждения' }); throw new Error('Нужно подтверждение'); }
+    if (IS_MAC && NEEDS_ACCESSIBILITY.has(action) && !macPermissions().accessibility) {
+      try { systemPreferences.isTrustedAccessibilityClient(true); } catch {} // покажет системное окно с кнопкой «Открыть настройки»
+      store.logAction({ action, args, status: 'error', risk: risk.level, note: 'Нет разрешения «Универсальный доступ»' });
+      throw new Error(ACCESS_MSG);
+    }
     try {
       const r = await pc.execute(action, args, { screenshotFn: takeScreenshot });
       store.logAction({ action, args: action === 'type_text' && risk.level === 'risky' ? { text: '•••' } : args, status: r.simulated ? 'simulated' : 'done', risk: risk.level, note: r.text });
@@ -383,6 +445,7 @@ function registerIpc() {
   ipcMain.handle('update:check', () => updater.check({ manual: true }));
   ipcMain.handle('update:state', () => updater.getState());
   ipcMain.handle('update:install', () => updater.install());
+  ipcMain.handle('update:openRelease', () => updater.openRelease());
   ipcMain.handle('update:setToken', (e, token) => {
     const t = String(token || '').trim();
     if (t && !/^(gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}$/.test(t)) return { ok: false, error: 'Это не похоже на GitHub-токен (ghp_… или github_pat_…).' };
@@ -398,6 +461,8 @@ app.whenReady().then(() => {
   const cfg = localConfigPath();
   if (cfg) store.seedFromLocalConfig(cfg);
   registerIpc();
+  createMacMenu();
+  if (IS_MAC && !app.isPackaged) { try { app.dock.setIcon(ICON_PNG); } catch {} }
   createWindow();
   createTray();
   updater.init({ getWin: () => win, getToken: () => store.getSettings().updateToken });

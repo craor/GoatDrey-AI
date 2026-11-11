@@ -1,10 +1,13 @@
 // Управление ПК. Windows — через PowerShell (user32 + SendKeys), без нативных модулей.
+// macOS — через osascript: System Events (клавиатура, приложения) и JXA + CoreGraphics (мышь). Ничего ставить не нужно,
+// но нужны разрешения «Универсальный доступ» и «Запись экрана» (Системные настройки → Конфиденциальность и безопасность).
 // Linux — через xdotool, если он есть; иначе режим симуляции (действие только пишется в журнал).
 const { execFile } = require('child_process');
 const os = require('os');
 
 const IS_WIN = process.platform === 'win32';
-const RISKY_KEYS = /(alt\+f4|ctrl\+w|ctrl\+q|delete|del|shift\+delete|ctrl\+shift\+esc|win\+l|win\+r|ctrl\+alt)/i;
+const IS_MAC = process.platform === 'darwin';
+const RISKY_KEYS = /(alt\+f4|ctrl\+w|ctrl\+q|delete|del|shift\+delete|ctrl\+shift\+esc|win\+l|win\+r|ctrl\+alt|(cmd|command|meta)\+(q|w|backspace|delete)|(cmd|command|meta)\+(option|alt)\+(esc|escape)|ctrl\+(cmd|command)\+q|(cmd|command)\+shift\+q)/i;
 const PASSWORDISH = /(парол|password|passwd|pin|cvv|\bкод\b|token|секрет|secret)/i;
 
 // Описание инструментов для модели (OpenAI tools / Groq function calling).
@@ -12,12 +15,12 @@ const TOOLS = [
   fn('mouse_move', 'Переместить курсор в точку экрана (пиксели).', { x: 'integer', y: 'integer' }, ['x', 'y']),
   fn('mouse_click', 'Клик мышью. Если x/y заданы — сначала переместить.', { x: 'integer', y: 'integer', button: { type: 'string', enum: ['left', 'right', 'middle'] }, double: 'boolean' }, []),
   fn('type_text', 'Напечатать текст в активное окно.', { text: 'string' }, ['text']),
-  fn('key_press', 'Нажать клавишу или сочетание, например "enter", "ctrl+c", "alt+tab".', { keys: 'string' }, ['keys']),
+  fn('key_press', IS_MAC ? 'Нажать клавишу или сочетание (macOS), например "enter", "cmd+c", "cmd+space", "cmd+tab".' : 'Нажать клавишу или сочетание, например "enter", "ctrl+c", "alt+tab".', { keys: 'string' }, ['keys']),
   fn('scroll', 'Прокрутить колесо мыши. Положительное — вверх.', { amount: 'integer' }, ['amount']),
   fn('screenshot', 'Сделать снимок экрана и показать пользователю. Возвращает размер экрана.', {}, []),
   fn('open_url', 'Открыть ссылку в браузере по умолчанию.', { url: 'string' }, ['url']),
-  fn('open_app', 'Запустить программу по имени (notepad, calc, explorer, chrome...).', { name: 'string' }, ['name']),
-  fn('close_app', 'Закрыть программу по имени процесса. Опасное действие.', { name: 'string' }, ['name'])
+  fn('open_app', IS_MAC ? 'Запустить приложение macOS по имени (TextEdit, Calculator, Finder, Safari, Google Chrome, Terminal...).' : 'Запустить программу по имени (notepad, calc, explorer, chrome...).', { name: 'string' }, ['name']),
+  fn('close_app', IS_MAC ? 'Закрыть (Quit) приложение macOS по имени. Опасное действие.' : 'Закрыть программу по имени процесса. Опасное действие.', { name: 'string' }, ['name'])
 ];
 function fn(name, description, props, required) {
   const properties = {};
@@ -91,6 +94,7 @@ async function execute(action, args = {}, { screenshotFn } = {}) {
     await shell.openExternal(args.url); return { ok: true, text: `Открыл ${args.url}` };
   }
   if (IS_WIN) return executeWindows(action, args);
+  if (IS_MAC) return require('./pc-mac').execute(action, args);
   if (await hasXdotool()) return executeXdotool(action, args);
   return { ok: true, simulated: true, text: `Симуляция (${os.platform()}): ${action} ${JSON.stringify(args)}. На Windows выполнится по-настоящему.` };
 }
@@ -132,4 +136,4 @@ async function executeXdotool(action, a) {
   }
 }
 
-module.exports = { TOOLS, classify, execute, toSendKeys, sendKeysEscape, IS_WIN };
+module.exports = { TOOLS, classify, execute, toSendKeys, sendKeysEscape, IS_WIN, IS_MAC };

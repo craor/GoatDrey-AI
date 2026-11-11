@@ -36,14 +36,16 @@ contextBridge.exposeInMainWorld('gd', {
     classify: (action, args) => inv('pc:classify', { action, args }),
     exec: (action, args, confirmed) => inv('pc:exec', { action, args, confirmed }),
     deny: (action, args) => inv('pc:deny', { action, args }),
-    log: () => inv('actions:get'), clearLog: () => inv('actions:clear')
+    log: () => inv('actions:get'), clearLog: () => inv('actions:clear'),
+    permissions: () => inv('pc:permissions'), openPrefs: kind => inv('pc:openPrefs', kind)
   },
+  relaunch: () => inv('app:relaunch'),
   file: { export: (name, content, ext) => inv('file:export', { name, content, ext }) },
   open: url => inv('shell:open', url),
   openDataDir: () => inv('shell:openData'),
   update: {
     check: () => inv('update:check'), state: () => inv('update:state'), install: () => inv('update:install'),
-    setToken: t => inv('update:setToken', t), onStatus: cb => ipcRenderer.on('update:status', (e, d) => cb(d))
+    setToken: t => inv('update:setToken', t), openRelease: () => inv('update:openRelease'), onStatus: cb => ipcRenderer.on('update:status', (e, d) => cb(d))
   },
   onCommand: cb => ipcRenderer.on('app:command', (e, c) => cb(c))
 });
