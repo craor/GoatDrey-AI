@@ -1,10 +1,10 @@
 // afterPack для electron-builder.
 //  • Windows: иконка и сведения о версии в «GoatDrey AI.exe» без wine/rcedit (resedit, чистый JS).
-//  • macOS: ad-hoc подпись (codesign -s -). Без неё Apple Silicon считает неподписанное приложение «повреждённым».
-//    Для universal подписываем только итоговую сборку: временные x64/arm64 должны совпадать байт-в-байт для склейки.
+//  • Electron Fuses (RunAsNode выкл., Node options/inspect выкл., asar integrity, cookie encryption).
+//    Подпись macOS — в after-sign.js, уже после fuses.
 const path = require('path'), fs = require('fs');
 exports.default = async function afterPack(ctx) {
-  if (ctx.electronPlatformName === 'darwin') return macAdhocSign(ctx);
+  if (ctx.electronPlatformName === 'darwin') return applyFuses(ctx);
   if (ctx.electronPlatformName !== 'win32') return;
   const ResEdit = require('resedit');
   const { productFilename } = ctx.packager.appInfo;
@@ -29,21 +29,36 @@ exports.default = async function afterPack(ctx) {
   res.outputResource(pe);
   fs.writeFileSync(exe, Buffer.from(pe.generate()));
   console.log(`  • afterPack: иконка и версия ${version} → ${path.basename(exe)}`);
+  await applyFuses(ctx);
 };
 
-function macAdhocSign(ctx) {
-  const ARCH = { 0: 'ia32', 1: 'x64', 2: 'armv7l', 3: 'arm64', 4: 'universal' };
-  const arch = ARCH[ctx.arch] || String(ctx.arch);
-  const targets = (ctx.targets || []).map(t => t.name);
-  // Universal-сборка вызывает afterPack для x64-temp, arm64-temp и итоговой. Подписываем итоговую
-  // (или одиночную arm64/x64, если собираем не universal).
-  const universalBuild = /universal/.test(ctx.appOutDir) || arch === 'universal';
-  const isTemp = /-(x64|arm64)-temp/.test(ctx.appOutDir) || (universalBuild && arch !== 'universal');
-  if (isTemp) { console.log(`  • afterPack mac: пропускаю временную ${arch}`); return; }
-  if (process.platform !== 'darwin') { console.log('  • afterPack mac: не macOS — ad-hoc подпись пропущена'); return; }
-  const app = path.join(ctx.appOutDir, `${ctx.packager.appInfo.productFilename}.app`);
-  const { execFileSync } = require('child_process');
-  execFileSync('codesign', ['--force', '--deep', '--sign', '-', '--timestamp=none', app], { stdio: 'inherit' });
-  execFileSync('codesign', ['--verify', '--deep', '--strict', '--verbose=2', app], { stdio: 'inherit' });
-  console.log(`  • afterPack mac: ad-hoc подпись → ${path.basename(app)} (${universalBuild ? 'universal' : arch}; ${targets.join(',')})`);
+async function applyFuses(ctx) {
+  let { flipFuses, FuseVersion, FuseV1Options } = {};
+  try { ({ flipFuses, FuseVersion, FuseV1Options } = require('@electron/fuses')); }
+  catch (e) { console.warn('  • afterPack: @electron/fuses не установлен — пропускаю', e.message); return; }
+  const name = ctx.packager.appInfo.productFilename;
+  let binary;
+  if (ctx.electronPlatformName === 'darwin') {
+    const ARCH = { 0: 'ia32', 1: 'x64', 2: 'armv7l', 3: 'arm64', 4: 'universal' };
+    const arch = ARCH[ctx.arch] || String(ctx.arch);
+    const universalBuild = /universal/.test(ctx.appOutDir) || arch === 'universal';
+    const isTemp = /-(x64|arm64)-temp/.test(ctx.appOutDir) || (universalBuild && arch !== 'universal');
+    if (isTemp) { console.log(`  • afterPack fuses: пропускаю временную ${arch}`); return; }
+    binary = path.join(ctx.appOutDir, `${name}.app`);
+  } else if (ctx.electronPlatformName === 'win32') {
+    binary = path.join(ctx.appOutDir, `${name}.exe`);
+  } else return;
+  if (!fs.existsSync(binary)) { console.warn('  • afterPack fuses: нет файла', binary); return; }
+  await flipFuses(binary, {
+    version: FuseVersion.V1,
+    resetAdHocDarwinSignature: ctx.electronPlatformName === 'darwin',
+    [FuseV1Options.RunAsNode]: false,
+    [FuseV1Options.EnableCookieEncryption]: true,
+    [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
+    [FuseV1Options.EnableNodeCliInspectArguments]: false,
+    [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: true,
+    [FuseV1Options.OnlyLoadAppFromAsar]: true,
+    [FuseV1Options.GrantFileProtocolExtraPrivileges]: false
+  });
+  console.log('  • afterPack: Electron fuses →', path.basename(binary));
 }

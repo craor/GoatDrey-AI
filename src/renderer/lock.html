@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>GoatDrey AI</title>
+  <link rel="stylesheet" href="fonts.css">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" href="../../assets/icon/icon-64.png">
+  <style>
+    body.lock-body { display:flex; align-items:center; justify-content:center; height:100vh; background: var(--bg); overflow:hidden; }
+    .lock-card { width: min(400px, calc(100% - 48px)); background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 32px 28px 28px; box-shadow: var(--shadow-2); -webkit-app-region: drag; }
+    .lock-card * { -webkit-app-region: no-drag; }
+    .lock-card .brand { padding: 0; margin-bottom: 18px; }
+    .lock-card h1 { font: 600 22px/1.25 var(--serif); margin: 0 0 8px; letter-spacing: -.02em; }
+    .lock-card p { margin: 0 0 18px; color: var(--muted); }
+    .lock-card .input { width: 100%; }
+    .lock-card .row { display:flex; gap:8px; margin-top: 14px; align-items:center; }
+    .lock-card .err { color: var(--danger); font-size: 13px; min-height: 1.3em; margin: 8px 0 0; }
+    .lock-drag { -webkit-app-region: drag; position: fixed; top:0; left:0; right:0; height: 36px; }
+  </style>
+</head>
+<body class="lock-body">
+  <div class="lock-drag"></div>
+  <div class="lock-card">
+    <div class="brand">
+      <img class="brand-mark" src="../../assets/icon/icon-64.png" alt="">
+      <span class="brand-name">Goat<i>Drey</i></span>
+    </div>
+    <h1>Приложение закрыто паролем</h1>
+    <p>Введите пароль или PIN, чтобы открыть GoatDrey. История и ключи на этом экране не показываются.</p>
+    <input class="input" id="pin" type="password" autocomplete="current-password" placeholder="Пароль или PIN" autofocus>
+    <div class="row">
+      <button class="btn primary" type="button" id="go">Открыть</button>
+    </div>
+    <p class="err" id="err"></p>
+  </div>
+  <script src="lock-screen.js"></script>
+</body>
+</html>

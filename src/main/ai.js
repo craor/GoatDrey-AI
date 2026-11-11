@@ -3,6 +3,8 @@
 // Работает в main-процессе: без CORS, ключ не уходит в DOM.
 const { preset, baseOf } = require('./providers');
 const anthropic = require('./anthropic');
+const net = require('./net');
+const { redact } = require('./redact');
 
 function headers(target, json = true) {
   const h = {};
@@ -16,8 +18,8 @@ async function readError(res) {
   let msg = `HTTP ${res.status}`;
   try {
     const t = await res.text();
-    try { const j = JSON.parse(t); msg = j.error?.message || j.error || j.message || j.base_resp?.status_msg || msg; if (typeof msg !== 'string') msg = JSON.stringify(msg); }
-    catch { if (t) msg += ': ' + t.slice(0, 200); }
+    try { const j = JSON.parse(t); msg = j.error?.message || j.error || j.message || j.base_resp?.status_msg || msg; if (typeof msg !== 'string') msg = JSON.stringify(msg); msg = redact(String(msg)); }
+    catch { if (t) msg += ': ' + redact(t).slice(0, 200); }
   } catch {}
   const e = new Error(msg); e.status = res.status; return e;
 }
@@ -25,7 +27,13 @@ async function readError(res) {
 /** target = { provider, base, key } — собирается из профиля. */
 function targetOf(profile) { return { provider: profile.provider, base: baseOf(profile), key: profile.apiKey || '' }; }
 
+function assertTarget(target) {
+  net.assertKeyDestination({ provider: target.provider, baseUrl: target.base, apiKey: target.key || '' });
+}
+
+
 async function listModels(target) {
+  assertTarget(target);
   if (preset(target.provider).adapter === 'anthropic') return anthropic.listModels(target);
   const res = await fetch(`${target.base}/models`, { headers: headers(target, false), signal: AbortSignal.timeout(15000) });
   if (!res.ok) throw await readError(res);
@@ -39,6 +47,7 @@ async function listModels(target) {
  */
 async function chatStream(opts) {
   const { target, model, messages, tools, temperature = 0.6, signal, onDelta } = opts;
+  assertTarget(target);
   if (preset(target.provider).adapter === 'anthropic') return anthropic.chatStream(opts);
   const body = buildBody({ model, messages, tools, temperature, provider: target.provider });
   const res = await fetch(`${target.base}/chat/completions`, { method: 'POST', headers: headers(target), body: JSON.stringify(body), signal });
@@ -150,6 +159,7 @@ function collectSources(t, map, onDelta) {
 const cleanCites = s => (s || '').replace(/【[^】]*】/g, '');
 
 async function chatOnce({ target, model, messages, temperature = 0.3, max_tokens = 400 }) {
+  assertTarget(target);
   if (preset(target.provider).adapter === 'anthropic') return anthropic.chatOnce({ target, model, messages, temperature, max_tokens });
   const body = { model, messages, max_tokens };
   if (!/^(o\d|gpt-5)/.test(model || '')) body.temperature = temperature;
@@ -161,6 +171,7 @@ async function chatOnce({ target, model, messages, temperature = 0.3, max_tokens
 
 // Голосовой ввод: Whisper (Groq whisper-large-v3-turbo или OpenAI whisper-1). audio — Buffer.
 async function transcribe({ target, model, audio, mime = 'audio/webm', language = 'ru' }) {
+  assertTarget(target);
   const fd = new FormData();
   fd.append('file', new Blob([audio], { type: mime }), 'voice.webm');
   fd.append('model', model);

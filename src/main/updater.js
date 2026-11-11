@@ -1,10 +1,14 @@
-// Автообновление через GitHub Releases (публичный репозиторий craor/GoatDrey-AI). Токен не нужен;
-// если пользователь сам указал GitHub-токен (Настройки → Обновления), он используется — например, чтобы не упираться в лимит запросов.
-// macOS: приложение без подписи Apple, а Squirrel.Mac ставит только подписанные обновления. Поэтому на Mac
-// проверяем последний релиз через GitHub API сами, по кнопке качаем .dmg в «Загрузки» и открываем его.
+// Автообновление через GitHub Releases (только публичный репозиторий craor/GoatDrey-AI, только https).
+// Токен не нужен; если пользователь сам указал GitHub-токен, он используется, чтобы не упираться в лимит запросов.
+// Windows: electron-updater проверяет sha512 из latest.yml. Подпись Authenticode без платного сертификата
+// невозможна — поэтому verifyUpdateCodeSignature не включаем (иначе обновления не встанут). См. README / SignPath.
+// macOS: приложение без подписи Apple, Squirrel.Mac ставит только подписанные обновления. Сами скачиваем .dmg,
+// проверяем sha512 из latest-mac.yml и открываем его; перетаскивание в «Программы» — за пользователем.
 const { app, dialog, shell } = require('electron');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+const net = require('./net');
 const IS_MAC = process.platform === 'darwin';
 const RELEASES = 'https://github.com/craor/GoatDrey-AI/releases';
 
@@ -29,6 +33,9 @@ function lazy() {
   au.autoDownload = true;
   au.autoInstallOnAppQuit = true;
   au.allowPrerelease = false;
+  au.allowDowngrade = false;
+  au.forceDevUpdateConfig = false;
+  // Подпись кода без платного сертификата проверить нельзя — полагаемся на sha512 из latest.yml (встроен в electron-updater).
   au.on('checking-for-update', () => send({ status: 'checking', error: null }));
   au.on('update-not-available', i => send({ status: 'latest', version: i?.version }));
   au.on('update-available', i => send({ status: 'downloading', version: i?.version, percent: 0 }));
@@ -69,6 +76,33 @@ function pickDmg(assets) {
   return dmgs.find(a => /universal/i.test(a.name)) || dmgs.find(a => a.name.includes(process.arch)) || dmgs[0] || null;
 }
 
+function parseYmlHashes(text) {
+  const map = {};
+  let url = null;
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const u = line.match(/^\s*-?\s*url:\s*(\S+)/);
+    if (u) url = u[1].replace(/['"]/g, '');
+    const h = line.match(/^\s*sha512:\s*(\S+)/);
+    if (h && url) map[url] = h[1].replace(/['"]/g, '');
+  }
+  return map;
+}
+
+async function fetchLatestMacYml(version, token) {
+  const url = `https://github.com/${REPO.owner}/${REPO.repo}/releases/download/v${version}/latest-mac.yml`;
+  const v = net.validateGithubReleaseUrl(url);
+  if (!v.ok) throw new Error(v.reason);
+  const res = token ? await gh(v.url, token, 'application/octet-stream') : await fetch(v.url, { headers: { 'User-Agent': 'GoatDrey-AI' }, signal: AbortSignal.timeout(20000) });
+  if (!res.ok) throw new Error(`Не удалось получить latest-mac.yml (${res.status}) — без sha512 файл не приму.`);
+  return parseYmlHashes(await res.text());
+}
+
+function assertGithubUrl(url) {
+  const v = net.validateGithubReleaseUrl(url);
+  if (!v.ok) throw new Error(v.reason);
+  return v.url;
+}
+
 async function checkMac(token) {
   send({ status: 'checking', error: null });
   const res = await gh(`https://api.github.com/repos/${REPO.owner}/${REPO.repo}/releases/latest`, token);
@@ -76,7 +110,9 @@ async function checkMac(token) {
   const rel = await res.json();
   const version = String(rel.tag_name || '').replace(/^v/, '');
   if (!version || cmpVer(version, app.getVersion()) <= 0) { send({ status: 'latest', version: app.getVersion() }); return; }
-  macRelease = { version, url: rel.html_url || `${RELEASES}/tag/v${version}`, dmg: pickDmg(rel.assets) };
+  let page = rel.html_url || `${RELEASES}/tag/v${version}`;
+  try { page = assertGithubUrl(page); } catch { page = `${RELEASES}/tag/v${version}`; }
+  macRelease = { version, url: page, dmg: pickDmg(rel.assets) };
   send({ status: 'available', version, url: macRelease.url });
   if (notifiedVersion === version) return;
   notifiedVersion = version;
@@ -94,21 +130,34 @@ async function downloadMac() {
   const token = (getToken() || '').trim();
   if (!macRelease?.dmg) { shell.openExternal(macRelease?.url || RELEASES); return; }
   const { dmg, version } = macRelease;
+  const src = token ? dmg.url : dmg.browser_download_url;
+  if (!src || !/^GoatDrey-AI-.*\.dmg$/i.test(dmg.name) || /[\\/]/.test(dmg.name)) throw new Error('Некорректное имя файла обновления.');
+  assertGithubUrl(src);
+  const hashes = await fetchLatestMacYml(version, token);
+  const expected = hashes[dmg.name] || hashes[path.basename(dmg.name)];
+  if (!expected) throw new Error('В latest-mac.yml нет sha512 для этого файла — обновление не ставлю.');
   send({ status: 'downloading', version, percent: 0 });
-  const res = token ? await gh(dmg.url, token, 'application/octet-stream', 30 * 60000) : await fetch(dmg.browser_download_url, { headers: { 'User-Agent': 'GoatDrey-AI' }, signal: AbortSignal.timeout(30 * 60000) });
+  const res = token ? await gh(assertGithubUrl(dmg.url), token, 'application/octet-stream', 30 * 60000) : await fetch(assertGithubUrl(dmg.browser_download_url), { headers: { 'User-Agent': 'GoatDrey-AI' }, signal: AbortSignal.timeout(30 * 60000) });
   if (!res.ok || !res.body) throw new Error(`Скачивание: HTTP ${res.status}`);
   const total = +res.headers.get('content-length') || dmg.size || 0;
-  const file = path.join(app.getPath('downloads'), dmg.name);
+  const file = path.join(app.getPath('downloads'), path.basename(dmg.name));
   const tmp = file + '.part';
   const out = fs.createWriteStream(tmp);
+  const hash = crypto.createHash('sha512');
   let got = 0, lastPct = -1;
   for await (const chunk of res.body) {
+    hash.update(chunk);
     if (!out.write(chunk)) await new Promise(r => out.once('drain', r));
     got += chunk.length;
     const pct = total ? Math.floor(got / total * 100) : 0;
     if (pct !== lastPct) { lastPct = pct; send({ status: 'downloading', version, percent: pct }); }
   }
   await new Promise((resolve, reject) => out.end(err => err ? reject(err) : resolve()));
+  const actual = hash.digest('base64');
+  if (actual !== expected) {
+    try { fs.unlinkSync(tmp); } catch {}
+    throw new Error('Контрольная сумма sha512 не совпала — файл обновления отброшен.');
+  }
   fs.renameSync(tmp, file);
   macFile = file;
   send({ status: 'mac-ready', version, file });
@@ -154,6 +203,10 @@ function install() {
   if (state.status === 'ready' && au) { setImmediate(() => au.quitAndInstall(false, true)); return true; }
   return false;
 }
-function openRelease() { shell.openExternal(macRelease?.url || state.url || RELEASES); return true; }
+function openRelease() {
+  const raw = macRelease?.url || state.url || RELEASES;
+  try { shell.openExternal(assertGithubUrl(raw)); } catch { shell.openExternal(RELEASES); }
+  return true;
+}
 
 module.exports = { init, check, install, openRelease, getState: () => state };

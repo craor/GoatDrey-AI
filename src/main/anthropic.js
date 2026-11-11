@@ -1,4 +1,5 @@
 // Адаптер Anthropic Messages API: превращает OpenAI-формат (messages/tools/tool_calls) в формат Claude и обратно.
+const net = require('./net');
 const VERSION = '2023-06-01';
 const hdr = t => ({ 'x-api-key': t.key, 'anthropic-version': VERSION, 'content-type': 'application/json' });
 
@@ -9,6 +10,7 @@ async function err(res) {
 }
 
 async function listModels(t) {
+  net.assertKeyDestination({ provider: t.provider || 'anthropic', baseUrl: t.base, apiKey: t.key || '' });
   const res = await fetch(`${t.base}/models?limit=100`, { headers: hdr(t), signal: AbortSignal.timeout(15000) });
   if (!res.ok) throw await err(res);
   return ((await res.json()).data || []).map(m => m.id).sort();
@@ -47,6 +49,7 @@ function convert(messages) {
 const convertTools = tools => (tools || []).filter(t => t.type === 'function').map(t => ({ name: t.function.name, description: t.function.description, input_schema: t.function.parameters }));
 
 async function chatStream({ target, model, messages, tools, temperature = 0.6, signal, onDelta }) {
+  net.assertKeyDestination({ provider: target.provider || 'anthropic', baseUrl: target.base, apiKey: target.key || '' });
   const { system, messages: msgs } = convert(messages);
   const body = { model, max_tokens: 4096, messages: msgs, stream: true, temperature: Math.min(1, temperature) };
   if (system) body.system = system;
@@ -80,6 +83,7 @@ async function chatStream({ target, model, messages, tools, temperature = 0.6, s
 }
 
 async function chatOnce({ target, model, messages, temperature = 0.3, max_tokens = 400 }) {
+  net.assertKeyDestination({ provider: target.provider || 'anthropic', baseUrl: target.base, apiKey: target.key || '' });
   const { system, messages: msgs } = convert(messages);
   const body = { model, max_tokens, messages: msgs, temperature }; if (system) body.system = system;
   const res = await fetch(`${target.base}/messages`, { method: 'POST', headers: hdr(target), body: JSON.stringify(body) });

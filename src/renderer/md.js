@@ -5,9 +5,9 @@
     const codes = [];
     s = s.replace(/`([^`\n]+)`/g, (m, c) => { codes.push(c); return `\u0000${codes.length - 1}\u0000`; });
     s = esc(s);
-    s = s.replace(/!\[([^\]]*)\]\((https?:[^)\s]+|data:image\/[^)\s]+)\)/g, '<img alt="$1" src="$2">');
-    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
-    s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noreferrer">$2</a>');
+    s = s.replace(/!\[([^\]]*)\]\((https:[^)\s]+|data:image\/(?:png|jpe?g|gif|webp)[^)\s]*)\)/g, '<img alt="$1" src="$2">');
+    s = s.replace(/\[([^\]]+)\]\((https:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    s = s.replace(/(^|[\s(])(https:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>');
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/__([^_]+)__/g, '<strong>$1</strong>');
     s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
     s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
@@ -57,8 +57,49 @@
       if (!p.length) p.push(lines[i++]);
       out.push(`<p>${p.map(inline).join(' ')}</p>`);
     }
-    return out.join('\n');
+    return sanitize(out.join('\n'));
   }
-  root.MD = { render, esc };
-  if (typeof module !== 'undefined') module.exports = { render, esc };
+
+  const PURIFY_CFG = {
+    ALLOWED_TAGS: ['p','br','hr','h2','h3','h4','h5','strong','em','del','code','pre','div','span','a','img','ul','ol','li','blockquote','table','thead','tbody','tr','th','td','sup','button','details','summary'],
+    ALLOWED_ATTR: ['href','src','alt','title','class','target','rel','data-copy'],
+    ALLOW_DATA_ATTR: false,
+    FORBID_TAGS: ['script','iframe','object','embed','form','input','link','meta','base','svg','math','style','video','audio'],
+    FORBID_ATTR: ['style']
+  };
+
+  function hookLinks(html) {
+    return String(html || '').replace(/<a\b([^>]*)>/gi, (m, attrs) => {
+      let a = attrs;
+      a = a.replace(/\brel\s*=\s*(['"][^'"]*['"]|[^\s>]+)/i, '').replace(/\btarget\s*=\s*(['"][^'"]*['"]|[^\s>]+)/i, '');
+      // только https
+      const href = (a.match(/\bhref\s*=\s*(['"])([^'"]*)\1/i) || [])[2] || '';
+      if (href && !/^https:\/\//i.test(href)) a = a.replace(/\bhref\s*=\s*(['"])[^'"]*\1/i, 'href="#"');
+      return `<a${a} target="_blank" rel="noopener noreferrer">`;
+    });
+  }
+
+  function fallbackSanitize(html) {
+    let s = String(html || '');
+    s = s.replace(/<\s*(script|iframe|object|embed|link|meta|base|form|svg|math|video|audio)(\s[^>]*)?>[\s\S]*?<\s*\/\s*\1\s*>/gi, '');
+    s = s.replace(/<\s*(script|iframe|object|embed|link|meta|base|form|svg|math)(\s[^>]*)?>/gi, '');
+    s = s.replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+    s = s.replace(/(href|src)\s*=\s*(['"])\s*javascript:[^'"]*\2/gi, '$1=$2#$2');
+    s = s.replace(/src\s*=\s*(['"])\s*data:image\/svg\+xml[^'"]*\1/gi, '');
+    return hookLinks(s);
+  }
+
+  function sanitize(html) {
+    if (typeof DOMPurify !== 'undefined') {
+      try {
+        const out = DOMPurify.sanitize(html, PURIFY_CFG);
+        return hookLinks(out);
+      } catch (e) { /* fallback */ }
+    }
+    return fallbackSanitize(html);
+  }
+
+  root.MD = { render, esc, sanitize };
+
+  if (typeof module !== 'undefined') module.exports = { render, esc, sanitize };
 })(typeof window !== 'undefined' ? window : globalThis);

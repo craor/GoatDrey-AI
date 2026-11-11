@@ -1,6 +1,7 @@
 // Локальное хранилище: settings.json, chats.json, actions.log.json в userData.
 const fs = require('fs');
 const path = require('path');
+const { redact, redactDeep } = require('./redact');
 
 const DEFAULT_SETTINGS = {
   theme: 'system',            // light | dark | system
@@ -36,19 +37,35 @@ class Store {
   constructor(dir, crypto = null) {
     this.dir = dir;
     this.crypto = crypto && crypto.available() ? crypto : null;
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try { fs.chmodSync(dir, 0o700); } catch {}
     this.files = {
       settings: path.join(dir, 'settings.json'),
       chats: path.join(dir, 'chats.json'),
       actions: path.join(dir, 'actions.log.json'),
-      templates: path.join(dir, 'templates.json')
+      templates: path.join(dir, 'templates.json'),
+      lock: path.join(dir, 'lock.json')
     };
   }
   _read(file, fallback) {
     try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
   }
   _dec(v) { if (typeof v !== 'string' || !v.startsWith(ENC)) return v || ''; try { return this.crypto ? this.crypto.decrypt(v.slice(ENC.length)) : ''; } catch { return ''; } }
-  _enc(v) { if (!v || !this.crypto || String(v).startsWith(ENC)) return v || ''; try { return ENC + this.crypto.encrypt(String(v)); } catch { return v; } }
+  _enc(v) {
+    if (!v) return '';
+    if (String(v).startsWith(ENC)) return v;
+    if (!this.crypto) {
+      const e = new Error('Шифрование ключей недоступно (safeStorage). Ключ не сохранён открытым текстом.');
+      e.code = 'NO_CRYPTO';
+      throw e;
+    }
+    try { return ENC + this.crypto.encrypt(String(v)); }
+    catch {
+      const e = new Error('Не удалось зашифровать ключ — он не записан на диск.');
+      e.code = 'ENC_FAIL';
+      throw e;
+    }
+  }
   _readSettings() {
     const raw = this._read(this.files.settings, {});
     if (Array.isArray(raw.profiles)) raw.profiles = raw.profiles.map(p => ({ ...p, apiKey: this._dec(p.apiKey) }));
@@ -62,8 +79,9 @@ class Store {
   }
   _write(file, data) {
     const tmp = file + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { encoding: 'utf8', mode: 0o600 });
     fs.renameSync(tmp, file);
+    try { fs.chmodSync(file, 0o600); } catch {}
   }
   getSettings() {
     const s = { ...DEFAULT_SETTINGS, ...this._readSettings() };
@@ -116,17 +134,24 @@ class Store {
   }
   getChats() { return this._read(this.files.chats, { chats: [], folders: ['Работа', 'Личное'] }); }
   saveChats(data) { this._write(this.files.chats, data); return true; }
-  getActions() { return this._read(this.files.actions, []); }
+  getActions() { return redactDeep(this._read(this.files.actions, [])); }
   logAction(entry) {
     // Текстовый журнал рядом с JSON: agent.log (одна строка на действие), открывается любым блокнотом.
+    // Секреты (ключи, токены, карты) вычищаются и в JSON, и в тексте.
+    const safe = redactDeep({
+      ...entry,
+      args: entry.action === 'type_text' ? { text: `(текст, ${String((entry.args && entry.args.text) || '').length} символов)` } : redactDeep(entry.args || {}),
+      note: redact(String(entry.note || ''))
+    });
     try {
-      const line = `${new Date().toISOString()}\t${entry.status || ''}\t${entry.action || ''}\t${JSON.stringify(entry.args || {})}\t${String(entry.note || '').split('\n')[0].slice(0, 300)}\n`;
+      const line = `${new Date().toISOString()}\t${safe.status || ''}\t${safe.action || ''}\t${JSON.stringify(safe.args || {})}\t${String(safe.note || '').split('\n')[0].slice(0, 300)}\n`;
       const lf = path.join(this.dir, 'agent.log');
-      try { if (fs.statSync(lf).size > 5 * 1024 * 1024) fs.renameSync(lf, lf + '.1'); } catch {}
-      fs.appendFileSync(lf, line, 'utf8');
+      try { if (fs.statSync(lf).size > 5 * 1024 * 1024) { fs.renameSync(lf, lf + '.1'); try { fs.chmodSync(lf + '.1', 0o600); } catch {} } } catch {}
+      fs.appendFileSync(lf, line, { encoding: 'utf8', mode: 0o600 });
+      try { fs.chmodSync(lf, 0o600); } catch {}
     } catch {}
     const list = this.getActions();
-    list.unshift({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), at: new Date().toISOString(), ...entry });
+    list.unshift({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), at: new Date().toISOString(), ...safe });
     this._write(this.files.actions, list.slice(0, 1000));
     return list[0];
   }
@@ -141,6 +166,19 @@ class Store {
     ]);
   }
   saveTemplates(list) { this._write(this.files.templates, list); return true; }
+  getLockRecord() {
+    const raw = this._read(this.files.lock, null);
+    if (!raw || typeof raw !== 'object') return null;
+    return raw;
+  }
+  setLockRecord(rec) {
+    if (!rec) {
+      try { fs.unlinkSync(this.files.lock); } catch {}
+      return null;
+    }
+    this._write(this.files.lock, rec);
+    return rec;
+  }
 }
 
 module.exports = { Store, DEFAULT_SETTINGS };

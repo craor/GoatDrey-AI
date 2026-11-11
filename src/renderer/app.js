@@ -321,7 +321,7 @@ function fillAi(el, m) {
   el.querySelector('.mm').textContent = m.model ? m.model.replace(/^.*\//, '') : '';
   const body = el.querySelector('.body');
   let html = '';
-  if (m.sources?.length) html += `<div class="sources">${m.sources.map((s, i) => { let host = ''; try { host = new URL(s.url).hostname.replace(/^www\./, ''); } catch {} return `<a class="source" href="${esc(s.url)}" target="_blank" title="${esc(s.snippet)}"><b>[${i + 1}]</b><div class="st">${esc(s.title)}</div><div class="su">${esc(host)}</div></a>`; }).join('')}</div>`;
+  if (m.sources?.length) html += `<div class="sources">${m.sources.map((s, i) => { let host = '', href = ''; try { const u = new URL(s.url); if (u.protocol === 'https:') { href = u.toString(); host = u.hostname.replace(/^www\./, ''); } } catch {} if (!href) return ''; return `<a class="source" href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="${esc(s.snippet)}"><b>[${i + 1}]</b><div class="st">${esc(s.title)}</div><div class="su">${esc(host)}</div></a>`; }).join('')}</div>`;
   if (m.status && streaming && !m.content) html += `<div class="thinking">${inkSvg()}<span class="lbl">${esc(m.status)}</span></div>`;
   if (m.steps?.length) {
     const blocked = m.steps.filter(x => x.state === 'blocked').length, errs = m.steps.filter(x => x.state === 'error').length;
@@ -334,6 +334,11 @@ function fillAi(el, m) {
   if (m.error) html += `<div class="error-card"><b>${esc(m.error.title)}</b><div>${esc(m.error.text)}</div>${m.error.action ? `<button class="btn" data-act="${m.error.action}">${m.error.actionLabel}</button>` : ''}</div>`;
   if (!streaming && (m.content || m.error)) html += `<div class="msg-actions"><button data-a="copy">${icon('copy', 13)}Копировать</button><button data-a="speak">${icon('speaker', 13)}Озвучить</button><button data-a="retry">${icon('retry', 13)}Ещё раз</button></div>`;
   body.innerHTML = html;
+  body.querySelectorAll('a[href]').forEach(a => a.addEventListener('click', e => {
+    e.preventDefault();
+    const href = a.getAttribute('href') || '';
+    if (/^https:\/\//i.test(href)) gd.open(href);
+  }));
   const rt = body.querySelector('.rtext'); if (rt && streaming) rt.scrollTop = rt.scrollHeight;
 }
 const inkSvg = () => '<svg width="44" height="14" viewBox="0 0 44 14" fill="none"><path d="M2 9c4-6 7 2 11-1s5-6 9-3 4 6 8 3 6-5 12-2" stroke-width="1.6" stroke-linecap="round"/></svg>';
@@ -592,6 +597,7 @@ function renderAttachments() {
 /* ================== Голос ================== */
 async function toggleMic() {
   if (!S.settings.voiceEnabled) { toast('Голос выключен в настройках'); return; }
+  try { await gd.voice.allowMic(); } catch {}
   const btn = $('#micBtn');
   if (S.recorder) { S.recorder.stop(); return; }
   const stt = await gd.ai.stt();
@@ -626,6 +632,7 @@ function webSpeech(btn) {
   r.onresult = e => appendInput([...e.results].map(x => x[0].transcript).join(' '));
   r.onerror = e => toast(e.error === 'network' || e.error === 'not-allowed' ? 'Встроенное распознавание недоступно. Добавьте ключ Groq или OpenAI — будет Whisper.' : 'Не расслышал: ' + e.error, true);
   r.onend = () => { S.recorder = null; btn.classList.remove('rec'); $('#hint').textContent = 'Enter — отправить'; };
+  gd.voice.allowMic().catch(() => {});
   try { r.start(); } catch (e) { r.onend(); toast('Не получилось включить микрофон: ' + e.message, true); }
 }
 function plain(md) { return md.replace(/```[\s\S]*?```/g, ' (код пропущу) ').replace(/[#*_`>|]/g, '').replace(/\[(.*?)\]\(.*?\)/g, '$1').replace(/\[\d+\]/g, ''); }
@@ -687,8 +694,8 @@ function modal(html, onMount) {
   onMount?.(sc, close);
   return close;
 }
-function askText(title, placeholder, value, cb) {
-  modal(`<div class="modal"><h3>${esc(title)}</h3><input class="input" style="width:100%;margin:6px 0 14px" placeholder="${esc(placeholder)}" value="${esc(value)}"><div class="row"><button class="btn" data-x>Отмена</button><button class="btn primary" data-ok>Готово</button></div></div>`, (sc, close) => {
+function askText(title, placeholder, value, cb, { password = /парол|PIN|пин/i.test(title + placeholder) } = {}) {
+  modal(`<div class="modal"><h3>${esc(title)}</h3><input class="input" ${password ? 'type="password"' : 'type="text"'} style="width:100%;margin:6px 0 14px" placeholder="${esc(placeholder)}" value="${esc(value)}"><div class="row"><button class="btn" data-x>Отмена</button><button class="btn primary" data-ok>Готово</button></div></div>`, (sc, close) => {
     const inp = sc.querySelector('input'); inp.focus(); inp.select();
     const ok = () => { const v = inp.value.trim(); close(); cb(v); };
     sc.querySelector('[data-ok]').onclick = ok; sc.querySelector('[data-x]').onclick = close;
@@ -869,7 +876,12 @@ function renderSettings() {
     ${sw('launchAtStartup', s.platform === 'darwin' ? 'Открывать при входе в систему' : 'Запускать вместе с Windows', s.platform === 'win32' || s.platform === 'darwin' ? '' : 'Работает в Windows и macOS')}
     <div class="field"><button class="btn" id="openData">Папка с данными</button><button class="btn" id="replayOnboard">Показать знакомство ещё раз</button></div>
   </div></div>
-  <div class="section" id="sec-update"><div><h3>Обновления</h3><div class="desc">Новые версии приходят с GitHub (craor/GoatDrey-AI) сами — ничего настраивать не нужно.${s.platform === 'darwin' ? ' На Mac программа без подписи Apple, поэтому новую версию я скачаю (.dmg) и открою, а перетащить её в «Программы» нужно самому.' : ''}</div></div><div>
+  <div class="section" id="sec-lock"><div><h3>Блокировка</h3><div class="desc">По желанию GoatDrey будет спрашивать пароль или PIN при запуске. Хранится только хэш (scrypt), не сам пароль. По умолчанию выключено.</div></div><div>
+    ${s.lockEnabled
+      ? `<p class="muted" style="margin:0 0 8px">Блокировка включена.</p><div class="field"><button class="btn" id="lockChange">Сменить пароль</button><button class="btn" id="lockNow">Заблокировать сейчас</button><button class="btn danger" id="lockOff">Отключить</button></div>`
+      : `<div class="field"><button class="btn" id="lockOn">Включить пароль на вход</button></div>`}
+  </div></div>
+  <div class="section" id="sec-update"><div><h3>Обновления</h3><div class="desc">Новые версии приходят только с GitHub (craor/GoatDrey-AI) по https, с проверкой sha512.${s.platform === 'darwin' ? ' На Mac программы без платной подписи Apple не обновляются сами: скачаю .dmg, проверю сумму и открою — перетащите в «Программы».' : ' На Windows после скачивания обновление ставится само. Подпись Authenticode появится, когда будет сертификат.'}</div></div><div>
     <div class="field"><button class="btn primary" id="updCheck">${icon('retry', 14)} Проверить обновления</button>${s.hasUpdateToken ? '<button class="btn danger" id="updClear">Убрать GitHub-токен</button>' : ''}</div>
     <div class="status" id="updStatus">Проверяю сам при запуске и раз в 6 часов.</div>
   </div></div>
@@ -902,6 +914,36 @@ function renderSettings() {
   v.querySelector('#clearLog').onclick = () => confirmDanger('Очистить журнал?', 'Записи о действиях удалятся.', 'Очистить', async () => { await gd.pc.clearLog(); toast('Журнал чист'); });
   v.querySelector('#openData').onclick = () => gd.openDataDir();
   v.querySelector('#replayOnboard').onclick = showOnboarding;
+  v.querySelector('#lockOn')?.addEventListener('click', () => {
+    askText('Новый пароль или PIN', 'Не меньше 4 символов', '', pin => {
+      if (!pin) return;
+      askText('Ещё раз, чтобы не ошибиться', 'Повторите пароль', '', async confirm => {
+        try { const r = await gd.lock.enable(pin, confirm); S.settings = r.settings; renderSettings(); toast('Блокировка включена'); }
+        catch (e) { toast(cleanErr(e), true); }
+      });
+    });
+  });
+  v.querySelector('#lockOff')?.addEventListener('click', () => {
+    askText('Отключить блокировку', 'Текущий пароль', '', async pin => {
+      try { const r = await gd.lock.disable(pin); S.settings = r.settings; renderSettings(); toast('Блокировка отключена'); }
+      catch (e) { toast(cleanErr(e), true); }
+    });
+  });
+  v.querySelector('#lockChange')?.addEventListener('click', () => {
+    askText('Текущий пароль', 'Текущий пароль', '', oldPin => {
+      if (!oldPin) return;
+      askText('Новый пароль', 'Не меньше 4 символов', '', pin => {
+        if (!pin) return;
+        askText('Повторите новый пароль', 'Ещё раз', '', async confirm => {
+          try { const r = await gd.lock.change(oldPin, pin, confirm); S.settings = r.settings; renderSettings(); toast('Пароль изменён'); }
+          catch (e) { toast(cleanErr(e), true); }
+        });
+      });
+    });
+  });
+  v.querySelector('#lockNow')?.addEventListener('click', async () => {
+    try { await gd.lock.now(); } catch (e) { toast(cleanErr(e), true); }
+  });
   v.querySelector('#updClear')?.addEventListener('click', async () => { const r = await gd.update.setToken(''); S.settings = r.settings; renderSettings(); toast('Токен убран'); });
   v.querySelector('#updCheck').onclick = async () => { renderUpdate({ status: 'checking' }); renderUpdate(await gd.update.check()); };
   gd.update.state().then(st => st && st.status !== 'idle' && renderUpdate(st));

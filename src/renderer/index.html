@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob: https:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; connect-src 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: data:; font-src 'self'; connect-src 'none'; object-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; worker-src 'none'">
   <title>GoatDrey AI</title>
   <link rel="icon" href="../../assets/icon/icon-64.png">
   <link rel="stylesheet" href="styles.css">
@@ -82,6 +82,7 @@
     </main>
   </div>
   <div class="toasts" id="toasts"></div>
+  <script src="purify.js"></script>
   <script src="md.js"></script>
   <script src="icons.js"></script>
   <script src="app.js"></script>

@@ -1,5 +1,6 @@
 // Веб-поиск без платных ключей: DuckDuckGo HTML → Bing HTML → Wikipedia.
 // Если поисковик показал капчу/блок — честно возвращаем ошибку провайдера и пробуем следующий.
+const untrusted = require('./untrusted');
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
 
 const ENT = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', '#39': "'", '#x27': "'" };
@@ -81,7 +82,8 @@ async function search(q, { provider = 'auto', n = 6 } = {}) {
   const errors = [];
   for (const p of order) {
     try {
-      const res = relevant(q, await PROVIDERS[p](q, n));
+      const raw = relevant(q, await PROVIDERS[p](q, n));
+      const res = raw.filter(r => { try { return new URL(r.url).protocol === 'https:'; } catch { return false; } });
       if (res.length < 2) throw new Error('выдача не по теме (похоже на антибот)');
       return { provider: p, results: res, errors };
     }
@@ -91,9 +93,9 @@ async function search(q, { provider = 'auto', n = 6 } = {}) {
 }
 
 function toContext(q, res) {
-  if (!res.results.length) return `Веб-поиск по запросу «${q}» не дал результатов (${res.errors.join('; ')}). Скажи пользователю честно, что поиск сейчас недоступен, и ответь по своим знаниям с оговоркой.`;
+  if (!res.results.length) return untrusted.wrap('web-search', `Веб-поиск по запросу «${q}» не дал результатов (${res.errors.join('; ')}). Скажи пользователю честно, что поиск сейчас недоступен, и ответь по своим знаниям с оговоркой.`);
   const lines = res.results.map((r, i) => `[${i + 1}] ${r.title}\n${r.url}\n${r.snippet}`);
-  return `Результаты веб-поиска (${res.provider}) по запросу «${q}», ${new Date().toLocaleDateString('ru-RU')}:\n\n${lines.join('\n\n')}\n\nОпирайся на них, ставь ссылки вида [1], [2]. Если данных не хватает — так и скажи.`;
+  return untrusted.wrap('web-search', `Результаты веб-поиска (${res.provider}) по запросу «${q}», ${new Date().toLocaleDateString('ru-RU')}:\n\n${lines.join('\n\n')}\n\nОпирайся на них, ставь ссылки вида [1], [2]. Если данных не хватает — так и скажи.`);
 }
 
 module.exports = { search, toContext, _bingUrl: bingUrl };

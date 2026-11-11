@@ -12,6 +12,10 @@ const search = require('./search');
 const pc = require('./pc');
 const updater = require('./updater');
 const safety = require('./safety');
+const net = require('./net');
+const { redact } = require('./redact');
+const untrusted = require('./untrusted');
+const lockLib = require('./lock');
 
 const ROOT = path.join(__dirname, '..', '..');
 const IS_MAC = process.platform === 'darwin';
@@ -20,6 +24,67 @@ const TRAY_PNG = path.join(ROOT, 'assets', 'icon', 'icon-32.png');
 
 let win, tray, store, media;
 const aborters = new Map();
+let locked = false;
+const lockLimiter = lockLib.createLimiter();
+let micAllowedUntil = 0;
+
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "media-src 'self' blob: data:",
+  "font-src 'self'",
+  "connect-src 'none'",
+  "object-src 'none'",
+  "frame-src 'none'",
+  "frame-ancestors 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "worker-src 'none'",
+  "upgrade-insecure-requests"
+].join('; ');
+
+function isAppFileUrl(url) {
+  if (!url || !String(url).startsWith('file:')) return false;
+  try {
+    const u = new URL(url);
+    let pth = decodeURIComponent(u.pathname);
+    if (process.platform === 'win32' && /^\/[A-Za-z]:/.test(pth)) pth = pth.slice(1);
+    const n = path.normalize(pth);
+    const root = path.normalize(ROOT);
+    if (n.startsWith(root + path.sep) || n === root) return true;
+    if (n.includes(`${path.sep}app.asar${path.sep}`) || n.includes(`${path.sep}app.asar`)) return true;
+    return false;
+  } catch { return false; }
+}
+
+function openExternalSafe(url) {
+  const v = net.validateExternalUrl(url);
+  if (!v.ok) return false;
+  shell.openExternal(v.url);
+  return true;
+}
+
+function trustedSender(event) {
+  try {
+    if (!event || !event.sender) return false;
+    if (!win || win.isDestroyed() || event.sender !== win.webContents) return false;
+    const frame = event.senderFrame;
+    if (!frame) return isAppFileUrl(event.sender.getURL?.() || '');
+    if (frame.isDestroyed?.()) return false;
+    return isAppFileUrl(frame.url || '');
+  } catch { return false; }
+}
+
+const LOCK_OK = new Set(['lock:status', 'lock:unlock', 'lock:enable', 'lock:disable', 'lock:change', 'theme:isDark']);
+function handle(channel, fn) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    if (!trustedSender(event)) throw new Error('IPC: недоверенный источник');
+    if (locked && !LOCK_OK.has(channel)) throw new Error('LOCKED');
+    return fn(event, ...args);
+  });
+}
 
 function createWindow() {
   const s = store.getSettings();
@@ -33,20 +98,54 @@ function createWindow() {
     show: false,
     // macOS: «светофор» поверх нашей шапки, как в Linear/Things.
     ...(IS_MAC ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 18 } } : {}),
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: false, spellcheck: true }
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      nodeIntegrationInWorker: false,
+      nodeIntegrationInSubFrames: false,
+      sandbox: true,
+      webviewTag: false,
+      spellcheck: true,
+      enableRemoteModule: false,
+      navigateOnDragDrop: false,
+      devTools: !app.isPackaged || process.argv.includes('--dev')
+    }
   });
-  win.loadFile(path.join(ROOT, 'src', 'renderer', 'index.html'));
+  const page = locked ? path.join(ROOT, 'src', 'renderer', 'lock.html') : path.join(ROOT, 'src', 'renderer', 'index.html');
+  win.loadFile(page);
   win.once('ready-to-show', () => win.show());
-  // Для проверки без экрана: GD_SNAPSHOT=путь.png — снимок окна и выход.
-  if (process.env.GD_SNAPSHOT) win.webContents.once('did-finish-load', () => setTimeout(async () => {
+  // Для проверки без экрана: только в неупакованной сборке. GD_EVAL — тоже только непакетный режим.
+  if (!app.isPackaged && process.env.GD_SNAPSHOT) win.webContents.once('did-finish-load', () => setTimeout(async () => {
     try { if (process.env.GD_EVAL) await win.webContents.executeJavaScript(process.env.GD_EVAL); } catch (e) { console.error('eval', e.message); }
     setTimeout(async () => { const img = await win.webContents.capturePage(); fs.writeFileSync(process.env.GD_SNAPSHOT, img.toPNG()); console.log('snapshot', process.env.GD_SNAPSHOT); app.quit(); }, +(process.env.GD_WAIT || 1500));
   }, 1200));
-  win.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:/i.test(url)) shell.openExternal(url); return { action: 'deny' }; });
-  win.webContents.on('will-navigate', (e, url) => { if (!url.startsWith('file:')) { e.preventDefault(); shell.openExternal(url); } });
-  // Микрофон для голосового ввода
-  win.webContents.session.setPermissionRequestHandler((wc, perm, cb) => cb(['media', 'microphone', 'clipboard-sanitized-write'].includes(perm)));
-  if (process.argv.includes('--dev')) win.webContents.openDevTools({ mode: 'detach' });
+  const ses = win.webContents.session;
+  ses.setPermissionRequestHandler((wc, perm, cb) => {
+    if (wc !== win.webContents) return cb(false);
+    if ((perm === 'media' || perm === 'microphone' || perm === 'audioCapture') && Date.now() < micAllowedUntil) return cb(true);
+    return cb(false);
+  });
+  ses.setPermissionCheckHandler((wc, perm) => {
+    if (wc && win && !win.isDestroyed() && wc !== win.webContents) return false;
+    if ((perm === 'media' || perm === 'microphone' || perm === 'audioCapture') && Date.now() < micAllowedUntil) return true;
+    return false;
+  });
+  ses.setDisplayMediaRequestHandler && ses.setDisplayMediaRequestHandler((req, cb) => cb({})); // renderer не снимает экран сам
+  ses.webRequest.onHeadersReceived((details, cb) => {
+    const headers = { ...(details.responseHeaders || {}), 'Content-Security-Policy': [CSP] };
+    cb({ responseHeaders: headers });
+  });
+  if (process.argv.includes('--dev') && !app.isPackaged) win.webContents.openDevTools({ mode: 'detach' });
+}
+
+function loadMainPage() {
+  if (!win || win.isDestroyed()) return;
+  win.loadFile(path.join(ROOT, 'src', 'renderer', 'index.html'));
+}
+function loadLockPage() {
+  if (!win || win.isDestroyed()) return;
+  win.loadFile(path.join(ROOT, 'src', 'renderer', 'lock.html'));
 }
 
 /** macOS: русское меню приложения — без него не работают Cmd+C/V/Z/Q. */
@@ -174,12 +273,12 @@ async function guessToolMode(profile, model) {
 function publicProfile(p) {
   const pre = preset(p.provider);
   const { apiKey, ...rest } = p;
-  return { ...rest, hasKey: !!apiKey, keyMask: apiKey ? apiKey.slice(0, 6) + '•'.repeat(8) + apiKey.slice(-4) : '', presetName: pre.name, short: pre.short, local: !!pre.local, noKey: !!pre.noKey, baseUrl: p.baseUrl || '', effectiveBase: baseOf(p), defaultModel: pre.defaultModel || '', defaultVision: pre.visionModel || '', browserSearch: !!pre.browserSearch, image: pre.image || null, video: pre.video || null, usable: usable(p) };
+  return { ...rest, hasKey: !!apiKey, keyMask: apiKey ? '•'.repeat(8) + apiKey.slice(-4) : '', presetName: pre.name, short: pre.short, local: !!pre.local, noKey: !!pre.noKey, baseUrl: p.baseUrl || '', effectiveBase: baseOf(p), defaultModel: pre.defaultModel || '', defaultVision: pre.visionModel || '', browserSearch: !!pre.browserSearch, image: pre.image || null, video: pre.video || null, usable: usable(p) };
 }
 function publicSettings() {
   const s = store.getSettings();
   const { apiKey, updateToken, ...rest } = s;
-  return { ...rest, hasUpdateToken: !!updateToken, stopHotkey: stopHotkeyLabel, safetyRules: safety.RULES_RU, profiles: s.profiles.map(publicProfile), platform: process.platform, version: app.getVersion(), dataDir: app.getPath('userData') };
+  return { ...rest, hasUpdateToken: !!updateToken, lockEnabled: !!(store.getLockRecord && store.getLockRecord()), stopHotkey: stopHotkeyLabel, safetyRules: safety.RULES_RU, profiles: s.profiles.map(publicProfile), platform: process.platform, version: app.getVersion(), dataDir: app.getPath('userData') };
 }
 function presetsPublic() {
   return ORDER.map(id => { const p = PRESETS[id]; return { id, name: p.name, short: p.short, base: p.base, keyUrl: p.keyUrl || '', local: !!p.local, noKey: !!p.noKey, defaultModel: p.defaultModel, note: p.note, image: !!p.image, video: !!p.video, stt: !!p.stt, browserSearch: !!p.browserSearch }; });
@@ -243,13 +342,6 @@ function registerStopHotkey() {
   for (const [acc, label] of combos) { try { if (globalShortcut.register(acc, () => emergencyStop('горячие клавиши ' + label))) ok.push(label); } catch {} }
   stopHotkeyLabel = ok.join(' или ') || '';
 }
-const INDICATOR_HTML = hot => `<!doctype html><meta charset="utf-8"><style>
-html,body{margin:0;background:transparent;font:500 12px/1 "Segoe UI",-apple-system,system-ui,sans-serif;-webkit-user-select:none;user-select:none;overflow:hidden}
-.b{display:flex;align-items:center;gap:8px;margin:4px;padding:7px 8px 7px 12px;border-radius:10px;background:#1C1916;color:#F4F1EA;border:1px solid #FB923C;box-shadow:0 4px 14px rgba(0,0,0,.35);-webkit-app-region:drag}
-i{width:8px;height:8px;border-radius:50%;background:#FB923C;animation:p 1.2s infinite}@keyframes p{50%{opacity:.3}}
-span{flex:1;white-space:nowrap}small{opacity:.6;margin-left:4px}
-button{-webkit-app-region:no-drag;border:0;border-radius:7px;background:#C2410C;color:#fff;font:600 12px/1 inherit;padding:6px 10px;cursor:pointer}button:hover{background:#EA580C}
-</style><div class="b"><i></i><span>GoatDrey управляет компьютером<small>${hot}</small></span><button onclick="location.hash='stop'">Стоп</button></div>`;
 function showIndicator(on) {
   try {
     if (!on) { if (indicator && !indicator.isDestroyed()) indicator.hide(); return; }
@@ -260,65 +352,74 @@ function showIndicator(on) {
       indicator.setVisibleOnAllWorkspaces?.(true, { visibleOnFullScreen: true });
       indicator.setContentProtection(true); // не попадает на скриншоты, которые смотрит модель
       indicator.webContents.on('did-navigate-in-page', (e, url) => { if (url.endsWith('#stop')) emergencyStop('кнопка «Стоп» на индикаторе'); });
-      indicator.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(INDICATOR_HTML(stopHotkeyLabel ? '· ' + stopHotkeyLabel : '')));
+      indicator.loadFile(path.join(ROOT, 'src', 'renderer', 'indicator.html'), { query: { hot: stopHotkeyLabel || '' } });
     }
     if (!indicator.isVisible()) indicator.showInactive();
   } catch (e) { console.warn('indicator:', e.message); }
 }
 
 function registerIpc() {
-  ipcMain.handle('settings:get', () => publicSettings());
-  ipcMain.handle('settings:set', (e, patch = {}) => {
+  handle('settings:get', () => publicSettings());
+  handle('settings:set', (e, patch = {}) => {
     const { profiles, activeProfile, apiKey, updateToken, ...safe } = patch; // профили и ключи — только через profiles:*
     const next = store.setSettings(safe);
     if ('theme' in safe) nativeTheme.themeSource = next.theme;
     if ('launchAtStartup' in safe && (process.platform === 'win32' || process.platform === 'darwin')) app.setLoginItemSettings({ openAtLogin: !!next.launchAtStartup });
     return publicSettings();
   });
-  ipcMain.handle('theme:isDark', () => nativeTheme.shouldUseDarkColors);
+  handle('theme:isDark', () => nativeTheme.shouldUseDarkColors);
   nativeTheme.on('updated', () => win?.webContents.send('theme:changed', nativeTheme.shouldUseDarkColors));
 
-  ipcMain.handle('chats:get', () => store.getChats());
-  ipcMain.handle('chats:save', (e, data) => store.saveChats(data));
-  ipcMain.handle('templates:get', () => store.getTemplates());
-  ipcMain.handle('templates:save', (e, list) => store.saveTemplates(list));
+  handle('chats:get', () => store.getChats());
+  handle('chats:save', (e, data) => store.saveChats(data));
+  handle('templates:get', () => store.getTemplates());
+  handle('templates:save', (e, list) => store.saveTemplates(list));
 
   /* --- Провайдеры и профили --- */
-  ipcMain.handle('providers:presets', () => presetsPublic());
-  ipcMain.handle('providers:detect', (e, key) => detectProvider(key));
-  ipcMain.handle('profiles:save', (e, p) => {
+  handle('providers:presets', () => presetsPublic());
+  handle('providers:detect', (e, key) => detectProvider(key));
+  handle('profiles:save', (e, p) => {
     const patch = { ...p };
     if (typeof patch.apiKey === 'string') { patch.apiKey = patch.apiKey.trim(); if (!patch.apiKey || patch.apiKey.includes('•')) delete patch.apiKey; }
     if (!patch.name) patch.name = preset(patch.provider).name;
-    if (patch.baseUrl) patch.baseUrl = String(patch.baseUrl).trim().replace(/\/+$/, '');
+    if (patch.baseUrl) {
+      patch.baseUrl = String(patch.baseUrl).trim().replace(/\/+$/, '');
+      const pre = preset(patch.provider);
+      const v = net.validateBaseUrl(patch.baseUrl, { allowLocalHttp: !!pre.local || patch.provider === 'custom' });
+      if (!v.ok) throw new Error(v.reason);
+      patch.baseUrl = v.url;
+    }
     const saved = store.saveProfile(patch);
     toolMode.clear();
     return publicProfile(saved);
   });
-  ipcMain.handle('profiles:delete', (e, id) => { store.deleteProfile(id); return publicSettings(); });
-  ipcMain.handle('profiles:activate', (e, { id, model }) => { store.activate(id, model); return publicSettings(); });
+  handle('profiles:delete', (e, id) => { store.deleteProfile(id); return publicSettings(); });
+  handle('profiles:activate', (e, { id, model }) => { store.activate(id, model); return publicSettings(); });
   /** Проверка ключа до/после сохранения: draft может содержать новый ключ, иначе берём сохранённый. */
-  ipcMain.handle('profiles:test', async (e, draft) => {
+  handle('profiles:test', async (e, draft) => {
     const saved = draft.id ? store.getSettings().profiles.find(p => p.id === draft.id) : null;
     const p = { ...(saved || {}), ...draft };
     if (!p.apiKey || String(p.apiKey).includes('•')) p.apiKey = saved?.apiKey || '';
     if (needsKey(p) && !p.apiKey) throw new Error('NO_KEY');
+    net.assertKeyDestination(p);
     const models = await ai.listModels(ai.targetOf(p));
     return models;
   });
-  ipcMain.handle('ai:models', async (e, profileId) => {
+  handle('ai:models', async (e, profileId) => {
     const p = store.getProfile(profileId);
     if (!usable(p)) throw new Error('NO_KEY');
+    net.assertKeyDestination(p);
     if (p.provider === 'ollama') { const st = await ollamaInfo(p, true); if (!st.running) throw new Error('OLLAMA_DOWN'); return st.models.map(m => m.name); }
     return ai.listModels(ai.targetOf(p));
   });
 
   /* --- Чат --- */
-  ipcMain.handle('ai:chat', async (e, { id, messages, profileId, model, mode, useTools, webSearch }) => {
+  handle('ai:chat', async (e, { id, messages, profileId, model, mode, useTools, webSearch }) => {
     const s = store.getSettings();
     const prof = store.getProfile(profileId);
     const pre = preset(prof.provider);
     if (!usable(prof)) throw new Error('NO_KEY');
+    net.assertKeyDestination(prof);
     if (!model && prof.provider === 'ollama') { const st = await ollamaInfo(prof); if (!st.running) throw new Error('OLLAMA_DOWN'); model = prof.model || st.models.find(m => !/embed/.test(m.name))?.name; }
     model = model || prof.model || pre.defaultModel;
     if (!model) throw new Error('NO_MODEL');
@@ -342,6 +443,19 @@ function registerIpc() {
     const fallbacks = profForTools.provider === 'groq' ? (s.fallbackModels || []).filter(m => m !== model) : [];
     const models = [model, ...fallbacks];
     const names = new Set(pc.TOOLS.map(t => t.function.name));
+    // Недоверенные данные (инструменты, поиск, файлы) помечаются здесь, в main — интерфейс это не обойдёт.
+    messages = untrusted.ensurePreamble(untrusted.wrapMessages(messages || [])).map(m => {
+      if (m.role === 'system' && typeof m.content === 'string' && /Результаты веб-поиска|Веб-поиск по запросу/.test(m.content) && !untrusted.isWrapped(m.content)) {
+        return { ...m, content: untrusted.wrap('web-search', m.content) };
+      }
+      if (m.role === 'user' && typeof m.content === 'string' && /Файл «/.test(m.content) && !untrusted.isWrapped(m.content)) {
+        return { ...m, content: untrusted.wrap('attachment', m.content) };
+      }
+      if (m.role === 'user' && Array.isArray(m.content)) {
+        return { ...m, content: m.content.map(part => (part && part.type === 'text' && part.text && /Файл «/.test(part.text) && !untrusted.isWrapped(part.text)) ? { ...part, text: untrusted.wrap('attachment', part.text) } : part) };
+      }
+      return m;
+    });
     const base = { target, messages, temperature: s.temperature, signal: ctrl.signal, onDelta };
     let lastErr;
     try {
@@ -366,8 +480,8 @@ function registerIpc() {
       throw lastErr;
     } finally { aborters.delete(id); }
   });
-  ipcMain.handle('ai:abort', (e, id) => { aborters.get(id)?.abort(); return true; });
-  ipcMain.handle('ai:title', async (e, text) => {
+  handle('ai:abort', (e, id) => { aborters.get(id)?.abort(); return true; });
+  handle('ai:title', async (e, text) => {
     const prof = store.getProfile();
     if (!usable(prof)) return null;
     let model = prof.provider === 'groq' ? (prof.visionModel || 'openai/gpt-oss-20b') : (prof.model || preset(prof.provider).defaultModel);
@@ -385,13 +499,13 @@ function registerIpc() {
     const o = s.profiles.find(p => p.provider === 'openai' && p.apiKey); if (o) return { target: ai.targetOf(o), model: 'whisper-1', name: 'Whisper · OpenAI' };
     return null;
   };
-  ipcMain.handle('ai:stt', () => sttTarget()?.name || null);
-  ipcMain.handle('ai:transcribe', async (e, { audio, mime }) => {
+  handle('ai:stt', () => sttTarget()?.name || null);
+  handle('ai:transcribe', async (e, { audio, mime }) => {
     const t = sttTarget(); if (!t) throw new Error('NO_STT');
     return ai.transcribe({ ...t, audio: Buffer.from(audio), mime, language: store.getSettings().language || 'ru' });
   });
 
-  ipcMain.handle('search:query', async (e, q) => {
+  handle('search:query', async (e, q) => {
     const s = store.getSettings();
     const res = await search.search(q, { provider: s.searchProvider });
     return { ...res, context: search.toContext(q, res) };
@@ -399,7 +513,7 @@ function registerIpc() {
 
   /* --- Локальные модели --- */
   let sysCache = null;
-  ipcMain.handle('local:status', async () => {
+  handle('local:status', async () => {
     const s = store.getSettings();
     const op = s.profiles.find(p => p.provider === 'ollama') || { provider: 'ollama' };
     const lp = s.profiles.find(p => p.provider === 'lmstudio') || { provider: 'lmstudio' };
@@ -408,14 +522,14 @@ function registerIpc() {
     return { ollama, lmstudio, sys: sysCache, rec: local.recommend(sysCache), suggested: local.SUGGESTED };
   });
   const pulls = new Map();
-  ipcMain.handle('local:pull', async (e, model) => {
+  handle('local:pull', async (e, model) => {
     const op = store.getSettings().profiles.find(p => p.provider === 'ollama') || { provider: 'ollama' };
     const ctrl = new AbortController(); pulls.set(model, ctrl);
     try { await local.ollamaPull(model, { base: baseOf(op), signal: ctrl.signal, onProgress: p => e.sender.send('local:progress', { model, ...p }) }); ollamaCache.at = 0; return true; }
     finally { pulls.delete(model); }
   });
-  ipcMain.handle('local:pullAbort', (e, model) => { pulls.get(model)?.abort(); return true; });
-  ipcMain.handle('local:delete', async (e, model) => { const op = store.getSettings().profiles.find(p => p.provider === 'ollama') || { provider: 'ollama' }; await local.ollamaDelete(model, baseOf(op)); ollamaCache.at = 0; return true; });
+  handle('local:pullAbort', (e, model) => { pulls.get(model)?.abort(); return true; });
+  handle('local:delete', async (e, model) => { const op = store.getSettings().profiles.find(p => p.provider === 'ollama') || { provider: 'ollama' }; await local.ollamaDelete(model, baseOf(op)); ollamaCache.at = 0; return true; });
 
   /* --- Фото и видео --- */
   const mediaProviders = () => store.getSettings().profiles.filter(usable).flatMap(p => {
@@ -425,9 +539,9 @@ function registerIpc() {
     return out;
   });
   const withData = en => ({ ...en, file: undefined, path: en.file, data: en.kind === 'image' ? `data:image/${en.file.endsWith('jpg') ? 'jpeg' : en.file.split('.').pop()};base64,` + (media.read(en.id) || Buffer.alloc(0)).toString('base64') : null });
-  ipcMain.handle('media:providers', () => mediaProviders());
-  ipcMain.handle('media:list', () => media.list().filter(x => fs.existsSync(x.file)).map(withData));
-  ipcMain.handle('media:image', async (e, { profileId, model, prompt, n = 1, size = '1024x1024' }) => {
+  handle('media:providers', () => mediaProviders());
+  handle('media:list', () => media.list().filter(x => fs.existsSync(x.file)).map(withData));
+  handle('media:image', async (e, { profileId, model, prompt, n = 1, size = '1024x1024' }) => {
     const mp = mediaProviders().find(x => x.kind === 'image' && (!profileId || x.profileId === profileId));
     if (!mp) throw new Error('NO_IMAGE_PROVIDER');
     const prof = store.getProfile(mp.profileId);
@@ -436,7 +550,7 @@ function registerIpc() {
     if (!bufs.length) throw new Error('Провайдер ничего не вернул');
     return bufs.map(b => withData(media.add({ kind: 'image', prompt, provider: prof.provider, profileId: prof.id, model, size }, b, extOf(b))));
   });
-  ipcMain.handle('media:video', async (e, { profileId, model, prompt, jobId }) => {
+  handle('media:video', async (e, { profileId, model, prompt, jobId }) => {
     const mp = mediaProviders().find(x => x.kind === 'video' && (!profileId || x.profileId === profileId));
     if (!mp) throw new Error('NO_VIDEO_PROVIDER');
     const prof = store.getProfile(mp.profileId);
@@ -444,27 +558,27 @@ function registerIpc() {
     const buf = await generateVideoMinimax({ target: ai.targetOf(prof), model, prompt, onProgress: text => e.sender.send('media:progress', { jobId, text }) });
     return withData(media.add({ kind: 'video', prompt, provider: prof.provider, profileId: prof.id, model }, buf, 'mp4'));
   });
-  ipcMain.handle('media:read', (e, id) => { const b = media.read(id); return b ? new Uint8Array(b) : null; });
-  ipcMain.handle('media:delete', (e, id) => media.remove(id));
-  ipcMain.handle('media:reveal', (e, id) => { const en = media.list().find(x => x.id === id); if (en) shell.showItemInFolder(en.file); else shell.openPath(media.dir); return true; });
+  handle('media:read', (e, id) => { const b = media.read(id); return b ? new Uint8Array(b) : null; });
+  handle('media:delete', (e, id) => media.remove(id));
+  handle('media:reveal', (e, id) => { const en = media.list().find(x => x.id === id); if (en) shell.showItemInFolder(en.file); else shell.openPath(media.dir); return true; });
 
   /* --- Управление ПК --- */
-  ipcMain.handle('pc:classify', (e, { action, args }) => pc.classify(action, args));
-  ipcMain.handle('pc:permissions', () => macPermissions());
-  ipcMain.handle('pc:openPrefs', (e, kind) => {
+  handle('pc:classify', (e, { action, args }) => pc.classify(action, args));
+  handle('pc:permissions', () => macPermissions());
+  handle('pc:openPrefs', (e, kind) => {
     if (!IS_MAC) return false;
     if (kind === 'accessibility') { try { systemPreferences.isTrustedAccessibilityClient(true); } catch {} } // macOS сам добавит программу в список
     if (kind === 'screen') desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1, height: 1 } }).catch(() => {});
     shell.openExternal(MAC_PREFS[kind] || MAC_PREFS.accessibility);
     return true;
   });
-  ipcMain.handle('app:relaunch', () => { app.relaunch(); app.exit(0); });
+  handle('app:relaunch', () => { app.relaunch(); app.exit(0); });
   /* --- Агент: задача, лимиты, правила, стоп --- */
-  ipcMain.handle('agent:start', (e, { userText } = {}) => agentStart(String(userText || '')));
-  ipcMain.handle('agent:end', (e, id) => { agentEnd(id); return true; });
-  ipcMain.handle('agent:stop', () => { emergencyStop('кнопка «Стоп»'); return true; });
-  ipcMain.handle('agent:info', () => ({ hotkey: stopHotkeyLabel, rules: safety.RULES_RU, maxSteps: MAX_STEPS, maxMinutes: MAX_MINUTES }));
-  ipcMain.handle('pc:exec', async (e, { action, args = {}, confirmed, taskId }) => {
+  handle('agent:start', (e, { userText } = {}) => agentStart(String(userText || '')));
+  handle('agent:end', (e, id) => { agentEnd(id); return true; });
+  handle('agent:stop', () => { emergencyStop('кнопка «Стоп»'); return true; });
+  handle('agent:info', () => ({ hotkey: stopHotkeyLabel, rules: safety.RULES_RU, maxSteps: MAX_STEPS, maxMinutes: MAX_MINUTES }));
+  handle('pc:exec', async (e, { action, args = {}, confirmed, taskId }) => {
     const s = store.getSettings();
     if (!s.pcControlEnabled) { store.logAction({ action, args, status: 'blocked', note: 'Управление ПК выключено' }); throw new Error('Управление ПК выключено в настройках'); }
     const t = task && task.id === taskId ? task : null;
@@ -496,45 +610,125 @@ function registerIpc() {
       throw err;
     }
   });
-  ipcMain.handle('pc:deny', (e, { action, args }) => store.logAction({ action, args, status: 'denied', note: 'Отклонено пользователем' }));
-  ipcMain.handle('actions:get', () => store.getActions());
-  ipcMain.handle('actions:clear', () => store.clearActions());
+  handle('pc:deny', (e, { action, args }) => store.logAction({ action, args, status: 'denied', note: 'Отклонено пользователем' }));
+  handle('actions:get', () => store.getActions());
+  handle('actions:clear', () => store.clearActions());
 
-  ipcMain.handle('file:export', async (e, { name, content, ext }) => {
+  handle('file:export', async (e, { name, content, ext }) => {
     const r = await dialog.showSaveDialog(win, { defaultPath: name.replace(/[\\/:*?"<>|]/g, '_') + '.' + ext, filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
     if (r.canceled || !r.filePath) return null;
     fs.writeFileSync(r.filePath, content, 'utf8');
     return r.filePath;
   });
-  ipcMain.handle('shell:open', (e, url) => /^https?:/i.test(url) && shell.openExternal(url));
-  ipcMain.handle('shell:openData', () => shell.openPath(app.getPath('userData')));
+  handle('shell:open', (e, url) => { const v = net.validateExternalUrl(url); if (!v.ok) return { ok: false, error: v.reason }; shell.openExternal(v.url); return { ok: true }; });
+  handle('shell:openData', () => shell.openPath(app.getPath('userData')));
   // Обновления
-  ipcMain.handle('update:check', () => updater.check({ manual: true }));
-  ipcMain.handle('update:state', () => updater.getState());
-  ipcMain.handle('update:install', () => updater.install());
-  ipcMain.handle('update:openRelease', () => updater.openRelease());
-  ipcMain.handle('update:setToken', (e, token) => {
-    const t = String(token || '').trim();
-    if (t && !/^(gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}$/.test(t)) return { ok: false, error: 'Это не похоже на GitHub-токен.' };
-    store.setSettings({ updateToken: t });
+  handle('update:check', () => updater.check({ manual: true }));
+  handle('update:state', () => updater.getState());
+  handle('update:install', () => updater.install());
+  handle('update:openRelease', () => updater.openRelease());
+  handle('update:setToken', (e, token) => {
+    const tkn = String(token || '').trim();
+    if (tkn && !/^(gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}$/.test(tkn)) return { ok: false, error: 'Это не похоже на GitHub-токен.' };
+    store.setSettings({ updateToken: tkn });
     return { ok: true, settings: publicSettings() };
+  });
+
+  handle('voice:allowMic', () => { micAllowedUntil = Date.now() + 120000; return true; });
+  handle('voice:denyMic', () => { micAllowedUntil = 0; return true; });
+
+  handle('lock:status', () => {
+    const rec = store.getLockRecord();
+    const lim = lockLimiter.status();
+    return { enabled: !!rec, locked, waitMs: lim.waitMs, blocked: lim.blocked, maxTries: lim.maxTries };
+  });
+  handle('lock:unlock', (e, pin) => {
+    const rec = store.getLockRecord();
+    if (!rec) { locked = false; return { ok: true, settings: publicSettings() }; }
+    lockLimiter.check();
+    if (!lockLib.verifyPin(String(pin || ''), rec)) {
+      const st = lockLimiter.fail();
+      const e2 = new Error(st.blocked ? `Слишком много попыток. Подождите ${Math.ceil(st.waitMs / 1000)} с.` : 'Неверный пароль.');
+      e2.code = st.blocked ? 'COOLDOWN' : 'BAD_PIN';
+      throw e2;
+    }
+    lockLimiter.reset();
+    locked = false;
+    loadMainPage();
+    return { ok: true, settings: publicSettings() };
+  });
+  handle('lock:enable', (e, { pin, confirm } = {}) => {
+    if (String(pin || '') !== String(confirm || '')) throw new Error('Пароли не совпадают.');
+    const rec = store.getLockRecord();
+    if (rec) throw new Error('Блокировка уже включена. Сначала смените или отключите пароль.');
+    store.setLockRecord(lockLib.hashPin(String(pin || '')));
+    return { ok: true, settings: publicSettings() };
+  });
+  handle('lock:disable', (e, pin) => {
+    const rec = store.getLockRecord();
+    if (!rec) return { ok: true, settings: publicSettings() };
+    if (!lockLib.verifyPin(String(pin || ''), rec)) throw new Error('Неверный пароль.');
+    store.setLockRecord(null);
+    locked = false;
+    return { ok: true, settings: publicSettings() };
+  });
+  handle('lock:change', (e, { oldPin, pin, confirm } = {}) => {
+    const rec = store.getLockRecord();
+    if (!rec) throw new Error('Блокировка выключена.');
+    if (!lockLib.verifyPin(String(oldPin || ''), rec)) throw new Error('Неверный текущий пароль.');
+    if (String(pin || '') !== String(confirm || '')) throw new Error('Новые пароли не совпадают.');
+    store.setLockRecord(lockLib.hashPin(String(pin || '')));
+    return { ok: true, settings: publicSettings() };
+  });
+  handle('lock:now', () => {
+    if (!store.getLockRecord()) throw new Error('Сначала задайте пароль в настройках.');
+    locked = true;
+    loadLockPage();
+    return { ok: true };
   });
 }
 
 if (process.env.GD_USERDATA) app.setPath('userData', process.env.GD_USERDATA);
-app.whenReady().then(() => {
-  // Ключи провайдеров храним зашифрованными средствами ОС. В сборках никаких ключей нет — их вводит сам пользователь.
-  const crypto = { available: () => { try { return safeStorage.isEncryptionAvailable(); } catch { return false; } }, encrypt: v => safeStorage.encryptString(v).toString('base64'), decrypt: v => safeStorage.decryptString(Buffer.from(v, 'base64')) };
-  store = new Store(app.getPath('userData'), crypto);
-  media = new Media(app.getPath('userData'));
-  registerIpc();
-  registerStopHotkey();
-  createMacMenu();
-  if (IS_MAC && !app.isPackaged) { try { app.dock.setIcon(ICON_PNG); } catch {} }
-  createWindow();
-  createTray();
-  updater.init({ getWin: () => win, getToken: () => store.getSettings().updateToken });
-  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+
+app.on('web-contents-created', (_e, contents) => {
+  contents.on('will-attach-webview', ev => ev.preventDefault());
+  contents.setWindowOpenHandler(({ url }) => { openExternalSafe(url); return { action: 'deny' }; });
+  contents.on('will-navigate', (ev, url) => {
+    if (isAppFileUrl(url)) return;
+    ev.preventDefault();
+    openExternalSafe(url);
+  });
+  contents.on('will-redirect', (ev, url) => {
+    if (!isAppFileUrl(url) && !String(url).startsWith('file:')) ev.preventDefault();
+  });
 });
+
+const gotInstance = app.requestSingleInstanceLock();
+if (!gotInstance) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (win && !win.isDestroyed()) {
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+    }
+  });
+  app.whenReady().then(() => {
+    // Ключи провайдеров храним зашифрованными средствами ОС. В сборках никаких ключей нет — их вводит сам пользователь.
+    const crypto = { available: () => { try { return safeStorage.isEncryptionAvailable(); } catch { return false; } }, encrypt: v => safeStorage.encryptString(v).toString('base64'), decrypt: v => safeStorage.decryptString(Buffer.from(v, 'base64')) };
+    store = new Store(app.getPath('userData'), crypto);
+    media = new Media(app.getPath('userData'));
+    locked = !!store.getLockRecord();
+    registerIpc();
+    registerStopHotkey();
+    createMacMenu();
+    if (IS_MAC && !app.isPackaged) { try { app.dock.setIcon(ICON_PNG); } catch {} }
+    createWindow();
+    createTray();
+    updater.init({ getWin: () => win, getToken: () => store.getSettings().updateToken });
+    app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  });
+}
 app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch {} });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

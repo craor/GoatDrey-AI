@@ -73,7 +73,7 @@ const server = http.createServer(async (req, res) => {
 
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}/v1`;
-  const T = (provider, key = 'k') => ({ provider, base, key });
+  const T = (provider, key = 'k') => ({ provider: (provider === 'ollama' || provider === 'lmstudio' || provider === 'custom') ? provider : 'custom', base, key });
 
   // 4. Список моделей, стрим, reasoning_content, tools
   assert.deepEqual(await ai.listModels(T('openai')), ['m-chat', 'm-vision']);
@@ -96,7 +96,7 @@ const server = http.createServer(async (req, res) => {
   console.log('Фолбэк на JSON-действия: OK');
 
   // 6. Anthropic стрим с tool_use
-  const ra = await anth.chatStream({ target: { provider: 'anthropic', base: base.replace('/v1', '/anthropic'), key: 'sk-ant-x' }, model: 'claude-x', messages: [{ role: 'user', content: 'напиши' }], tools: pc.TOOLS });
+  const ra = await anth.chatStream({ target: { provider: 'custom', base: base.replace('/v1', '/anthropic'), key: 'sk-ant-x' }, model: 'claude-x', messages: [{ role: 'user', content: 'напиши' }], tools: pc.TOOLS });
   assert.equal(ra.content, 'Ок. '); assert.equal(ra.toolCalls[0].function.name, 'type_text'); assert.equal(JSON.parse(ra.toolCalls[0].function.arguments).text, 'молоко');
   assert.equal(seen.at(-1).xkey, 'sk-ant-x'); assert.ok(seen.at(-1).body.tools[0].input_schema);
   console.log('Anthropic стрим + tool_use: OK');

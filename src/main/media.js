@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { headers, readError } = require('./ai');
+const net = require('./net');
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -23,13 +24,17 @@ class Media {
 }
 
 async function download(url) {
-  const res = await fetch(url, { signal: AbortSignal.timeout(120000) });
+  const u = new URL(String(url || ''));
+  const ok = u.protocol === 'https:' || (u.protocol === 'http:' && net.isLoopback(u.hostname));
+  if (!ok) throw new Error('Результат можно скачать только по https (или http на localhost).');
+  const res = await fetch(u.toString(), { signal: AbortSignal.timeout(120000) });
   if (!res.ok) throw new Error(`Не скачал результат: HTTP ${res.status}`);
   return Buffer.from(await res.arrayBuffer());
 }
 
 /** Картинки. kind: 'openai' | 'minimax'. Возвращает массив Buffer (png/jpeg). */
 async function generateImages({ target, kind, model, prompt, n = 1, size = '1024x1024' }) {
+  net.assertKeyDestination({ provider: target.provider, baseUrl: target.base, apiKey: target.key || '' });
   if (kind === 'minimax') {
     const ar = { '1024x1024': '1:1', '1536x1024': '3:2', '1024x1536': '2:3', '1792x1024': '16:9', '1024x1792': '9:16' }[size] || '1:1';
     const res = await fetch(`${target.base}/image_generation`, { method: 'POST', headers: headers(target), body: JSON.stringify({ model, prompt, aspect_ratio: ar, response_format: 'base64', n }) });
@@ -52,6 +57,7 @@ async function generateImages({ target, kind, model, prompt, n = 1, size = '1024
 
 /** Видео MiniMax: создать задачу → опрашивать → скачать mp4. onProgress(text). */
 async function generateVideoMinimax({ target, model = 'MiniMax-Hailuo-02', prompt, onProgress, pollMs = 10000, timeoutMs = 15 * 60000, signal }) {
+  net.assertKeyDestination({ provider: target.provider, baseUrl: target.base, apiKey: target.key || '' });
   const body = { model, prompt, duration: 6 };
   if (/hailuo-02/i.test(model)) body.resolution = '768P';
   const res = await fetch(`${target.base}/video_generation`, { method: 'POST', headers: headers(target), body: JSON.stringify(body) });

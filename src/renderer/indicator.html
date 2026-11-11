@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'none'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>GoatDrey</title>
+  <style>
+    html,body{margin:0;background:transparent;font:500 12px/1 "Segoe UI",-apple-system,system-ui,sans-serif;-webkit-user-select:none;user-select:none;overflow:hidden}
+    .b{display:flex;align-items:center;gap:8px;margin:4px;padding:7px 8px 7px 12px;border-radius:10px;background:#1C1916;color:#F4F1EA;border:1px solid #FB923C;box-shadow:0 4px 14px rgba(0,0,0,.35);-webkit-app-region:drag}
+    i{width:8px;height:8px;border-radius:50%;background:#FB923C;animation:p 1.2s infinite;display:block}@keyframes p{50%{opacity:.3}}
+    span{flex:1;white-space:nowrap}small{opacity:.6;margin-left:4px}
+    button{-webkit-app-region:no-drag;border:0;border-radius:7px;background:#C2410C;color:#fff;font:600 12px/1 inherit;padding:6px 10px;cursor:pointer}
+    button:hover{background:#EA580C}
+  </style>
+</head>
+<body>
+  <div class="b"><i></i><span>GoatDrey управляет компьютером<small id="hot"></small></span><button type="button" id="stop">Стоп</button></div>
+  <script src="indicator.js"></script>
+</body>
+</html>

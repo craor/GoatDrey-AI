@@ -1,7 +1,7 @@
 {
   "name": "goatdrey-ai",
   "productName": "GoatDrey AI",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "GoatDrey AI — настольный помощник для Windows 10/11 и macOS: чат, поиск, автономная работа на компьютере. Думает на вашем компьютере (Ollama) или через ваш ключ API любого провайдера.",
   "main": "src/main/main.js",
   "author": "GoatDrey",
@@ -9,7 +9,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
-    "test": "node scripts/smoke-providers.js && node scripts/smoke-groq.js && node scripts/smoke-search.js && node scripts/smoke-md.js && node scripts/smoke-ollama.js",
+    "test": "node scripts/test-safety.js && node scripts/test-security.js && node scripts/test-md.js && node scripts/check-no-keys.js && node scripts/smoke-providers.js && node scripts/smoke-groq.js && node scripts/smoke-search.js && node scripts/smoke-md.js && node scripts/smoke-ollama.js",
     "icons": "python scripts/make-icons.py",
     "dist:win": "electron-builder --win nsis portable --x64 --publish never",
     "dist:dir": "electron-builder --dir --publish never",
@@ -20,7 +20,8 @@
     "dist:win-portable": "electron-builder --win portable --x64 --publish never",
     "release:win": "electron-builder --win nsis --x64 --publish always",
     "dist:mac": "electron-builder --mac dmg zip --universal --publish never",
-    "icons:mac": "python3 -c \"from PIL import Image;im=Image.open('assets/icon/icon-1024.png');im.save('assets/icon/icon.icns')\""
+    "icons:mac": "python3 -c \"from PIL import Image;im=Image.open('assets/icon/icon-1024.png');im.save('assets/icon/icon.icns')\"",
+    "test:security": "node scripts/test-safety.js && node scripts/test-security.js && node scripts/test-md.js && node scripts/check-no-keys.js"
   },
   "build": {
     "appId": "ai.goatdrey.desktop",
@@ -129,11 +130,24 @@
         "private": false,
         "releaseType": "release"
       }
-    ]
+    ],
+    "afterSign": "scripts/after-sign.js",
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "grantFileProtocolExtraPrivileges": false
+    },
+    "asar": true
   },
   "devDependencies": {
-    "electron": "^33.2.0",
-    "electron-builder": "^25.1.8",
+    "@electron/fuses": "^2.1.3",
+    "dompurify": "3.4.17",
+    "electron": "^45.3.0",
+    "electron-builder": "^26.18.0",
     "resedit": "^2.0.3"
   },
   "dependencies": {
