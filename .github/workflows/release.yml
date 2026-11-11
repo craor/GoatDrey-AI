@@ -1,0 +1,94 @@
+# Сборка GoatDrey AI для macOS (universal: Apple Silicon + Intel) и Windows по тегу vX.Y.Z.
+# Файлы кладутся в релиз этого (приватного) репозитория — оттуда же их берёт автообновление.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Тег релиза, например v1.2.0'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Создать релиз (если ещё нет)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Релиз $TAG уже есть"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "GoatDrey AI ${TAG#v}" \
+              --notes "Windows: GoatDrey-AI-Setup-${TAG#v}.exe. macOS (Apple Silicon и Intel): GoatDrey-AI-${TAG#v}-mac-universal.dmg — при первом запуске правый клик → «Открыть»."
+          fi
+
+  mac:
+    needs: create-release
+    runs-on: macos-latest
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: config.local.json из секрета
+        env:
+          GROQ_API_KEY: ''
+        run: node -e "const k=process.env.GROQ_API_KEY;require('fs').writeFileSync('config.local.json',JSON.stringify(k?{groqApiKey:k,model:'openai/gpt-oss-120b'}:{}))"
+      - name: Сборка (dmg + zip, universal)
+        run: npx electron-builder --mac dmg zip --universal --publish never
+      - name: Проверка подписи
+        run: |
+          codesign --verify --deep --strict --verbose=2 "release/mac-universal/GoatDrey AI.app"
+          lipo -archs "release/mac-universal/GoatDrey AI.app/Contents/MacOS/GoatDrey AI"
+          ls -la release
+      - name: Загрузить в релиз
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rm -f config.local.json
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber release/*.dmg release/*.zip release/latest-mac.yml $(ls release/*.blockmap 2>/dev/null)
+
+  windows:
+    needs: create-release
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: config.local.json из секрета
+        env:
+          GROQ_API_KEY: ''
+        run: node -e "const k=process.env.GROQ_API_KEY;require('fs').writeFileSync('config.local.json',JSON.stringify(k?{groqApiKey:k,model:'openai/gpt-oss-120b'}:{}))"
+      - name: Сборка (NSIS-установщик)
+        run: npx electron-builder --win nsis --x64 --publish never
+      - name: Загрузить в релиз
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rm -f config.local.json
+          ls -la release
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber release/GoatDrey-AI-Setup-*.exe release/GoatDrey-AI-Setup-*.exe.blockmap release/latest.yml
