@@ -1,6 +1,6 @@
-# Сборка GoatDrey AI для macOS (universal: Apple Silicon + Intel) и Windows по тегу vX.Y.Z.
-# Файлы кладутся в релиз этого репозитория — оттуда же их берёт автообновление.
-# В сборки не попадает НИКАКИХ ключей API: пользователь подключает Ollama или вводит свой ключ в программе.
+# Сборка GoatDrey AI для macOS (universal) и Windows по тегу vX.Y.Z.
+# Файлы кладутся в релиз этого репозитория — оттуда же их берёт автообновление (только https, sha512).
+# В сборки не попадает НИКАКИХ ключей API. contents: write только у job "release".
 name: release
 
 on:
@@ -9,83 +9,134 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Тег релиза, например v1.2.0'
+        description: 'Тег релиза, например v1.4.0'
         required: true
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
-  create-release:
+  test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - name: Создать релиз (если ещё нет)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Релиз $TAG уже есть"
-          else
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "GoatDrey AI ${TAG#v}" \
-              --notes "Windows: GoatDrey-AI-Setup-${TAG#v}.exe. macOS (Apple Silicon и Intel): GoatDrey-AI-${TAG#v}-mac-universal.dmg — при первом запуске правый клик → «Открыть». Ключей API в сборке нет: при первом запуске выберите Ollama (бесплатно, на вашем компьютере) или вставьте свой ключ."
-          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Тесты
+        run: npm test
+      - name: npm audit (high/critical = ошибка)
+        run: npm audit --audit-level=high
+      - name: Проверка — в репозитории нет ключей
+        run: node scripts/check-no-keys.js
 
   mac:
-    needs: create-release
+    needs: test
     runs-on: macos-latest
+    permissions:
+      contents: read
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.TAG }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - run: npm ci
       - name: Проверка — в репозитории нет ключей
         run: node scripts/check-no-keys.js
       - name: Сборка (dmg + zip, universal)
         run: npx electron-builder --mac dmg zip --universal --publish never
-      - name: Проверка подписи
+      - name: Проверка подписи и ключей
         run: |
           codesign --verify --deep --strict --verbose=2 "release/mac-universal/GoatDrey AI.app"
           lipo -archs "release/mac-universal/GoatDrey AI.app/Contents/MacOS/GoatDrey AI"
           ls -la release
           node scripts/check-no-keys.js "release/mac-universal/GoatDrey AI.app/Contents/Resources"
-      - name: Загрузить в релиз
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber release/*.dmg release/*.zip release/latest-mac.yml $(ls release/*.blockmap 2>/dev/null)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mac
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/latest-mac.yml
+            release/*.blockmap
+          if-no-files-found: error
 
   windows:
-    needs: create-release
+    needs: test
     runs-on: windows-latest
+    permissions:
+      contents: read
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.TAG }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - run: npm ci
       - name: Проверка — в репозитории нет ключей
         run: node scripts/check-no-keys.js
       - name: Сборка (NSIS-установщик)
         run: npx electron-builder --win nsis --x64 --publish never
-      - name: Загрузить в релиз
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Проверка ключей в распакованной сборке
         run: |
           ls -la release
           node scripts/check-no-keys.js release/win-unpacked
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber release/GoatDrey-AI-Setup-*.exe release/GoatDrey-AI-Setup-*.exe.blockmap release/latest.yml
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows
+          path: |
+            release/GoatDrey-AI-Setup-*.exe
+            release/GoatDrey-AI-Setup-*.exe.blockmap
+            release/latest.yml
+          if-no-files-found: error
+
+  release:
+    needs: [mac, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: artifacts
+      - name: Создать релиз и загрузить файлы
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          find artifacts -type f -ls
+          VER="${TAG#v}"
+          NOTES="Windows: GoatDrey-AI-Setup-${VER}.exe. macOS (Apple Silicon и Intel): GoatDrey-AI-${VER}-mac-universal.dmg — при первом запуске правый клик → «Открыть».
+
+          Ключей API в сборке нет: при первом запуске выберите Ollama (бесплатно, на вашем компьютере) или вставьте свой ключ.
+
+          Обновления проверяют sha512 и принимаются только из этого репозитория по HTTPS. Подписи кода (Authenticode / Apple Developer) нет: для неё нужен платный сертификат; на Windows открытым проектам можно подписывать через SignPath (https://signpath.io/).
+
+          Подробности безопасности — в SECURITY.md и README."
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Релиз $TAG уже есть"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "GoatDrey AI $VER" --notes "$NOTES"
+          fi
+          shopt -s nullglob
+          files=(artifacts/mac/*.dmg artifacts/mac/*.zip artifacts/mac/latest-mac.yml artifacts/mac/*.blockmap artifacts/windows/GoatDrey-AI-Setup-*.exe artifacts/windows/GoatDrey-AI-Setup-*.exe.blockmap artifacts/windows/latest.yml)
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "${files[@]}"
