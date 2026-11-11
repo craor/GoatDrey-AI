@@ -1,0 +1,99 @@
+{
+  "name": "goatdrey-ai",
+  "productName": "GoatDrey AI",
+  "version": "1.1.1",
+  "description": "GoatDrey AI — настольный помощник для Windows 10/11: чат, поиск, управление ПК. Думает на вашем ПК (Ollama) или через любой ключ API.",
+  "main": "src/main/main.js",
+  "author": "GoatDrey",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "smoke": "node scripts/smoke-groq.js",
+    "test": "node scripts/smoke-providers.js && node scripts/smoke-groq.js && node scripts/smoke-search.js && node scripts/smoke-md.js && node scripts/smoke-ollama.js",
+    "icons": "python scripts/make-icons.py",
+    "dist:win": "electron-builder --win nsis portable --x64 --publish never",
+    "dist:dir": "electron-builder --dir --publish never",
+    "dist:win-installer": "electron-builder --win nsis --x64 --publish never",
+    "fix:electron": "node node_modules/electron/install.js",
+    "smoke:providers": "node scripts/smoke-providers.js",
+    "smoke:ollama": "node scripts/smoke-ollama.js",
+    "dist:win-portable": "electron-builder --win portable --x64 --publish never",
+    "release:win": "electron-builder --win nsis --x64 --publish always"
+  },
+  "build": {
+    "appId": "ai.goatdrey.desktop",
+    "productName": "GoatDrey AI",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json",
+      "!**/*.map"
+    ],
+    "extraResources": [
+      {
+        "from": "config.local.json",
+        "to": "config.local.json",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "icon": "assets/icon/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "signAndEditExecutable": false,
+      "artifactName": "GoatDrey-AI-${version}-win-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "GoatDrey AI",
+      "menuCategory": false,
+      "uninstallDisplayName": "GoatDrey AI ${version}",
+      "installerIcon": "assets/icon/icon.ico",
+      "uninstallerIcon": "assets/icon/icon.ico",
+      "installerHeaderIcon": "assets/icon/icon.ico",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "installerLanguages": [
+        "ru_RU",
+        "en_US"
+      ],
+      "language": "1049",
+      "multiLanguageInstaller": true,
+      "artifactName": "GoatDrey-AI-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "GoatDrey-AI-${version}-portable.exe"
+    },
+    "afterPack": "scripts/after-pack.js",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "craor",
+        "repo": "GoatDrey-AI",
+        "private": true,
+        "releaseType": "release"
+      }
+    ]
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "resedit": "^2.0.3"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
+  }
+}
