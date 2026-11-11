@@ -12,15 +12,19 @@ const PASSWORDISH = /(парол|password|passwd|pin|cvv|\bкод\b|token|сек
 
 // Описание инструментов для модели (OpenAI tools / Groq function calling).
 const TOOLS = [
+  fn('screenshot', 'Посмотреть на экран: снимок + описание окон и кнопок с координатами. Делай его в начале задачи и после важных шагов, чтобы проверить результат.', {}, []),
   fn('mouse_move', 'Переместить курсор в точку экрана (пиксели).', { x: 'integer', y: 'integer' }, ['x', 'y']),
-  fn('mouse_click', 'Клик мышью. Если x/y заданы — сначала переместить.', { x: 'integer', y: 'integer', button: { type: 'string', enum: ['left', 'right', 'middle'] }, double: 'boolean' }, []),
+  fn('mouse_click', 'Клик мышью. Если x/y заданы — сначала переместить. В label ОБЯЗАТЕЛЬНО напиши, что написано на элементе, по которому кликаешь (например "Сохранить", "Поиск", "Файл").', { x: 'integer', y: 'integer', label: 'string', button: { type: 'string', enum: ['left', 'right', 'middle'] }, double: 'boolean' }, ['label']),
   fn('type_text', 'Напечатать текст в активное окно.', { text: 'string' }, ['text']),
   fn('key_press', IS_MAC ? 'Нажать клавишу или сочетание (macOS), например "enter", "cmd+c", "cmd+space", "cmd+tab".' : 'Нажать клавишу или сочетание, например "enter", "ctrl+c", "alt+tab".', { keys: 'string' }, ['keys']),
   fn('scroll', 'Прокрутить колесо мыши. Положительное — вверх.', { amount: 'integer' }, ['amount']),
-  fn('screenshot', 'Сделать снимок экрана и показать пользователю. Возвращает размер экрана.', {}, []),
+  fn('wait', 'Подождать, пока что-то загрузится (секунды, 1–10).', { seconds: 'integer' }, ['seconds']),
   fn('open_url', 'Открыть ссылку в браузере по умолчанию.', { url: 'string' }, ['url']),
-  fn('open_app', IS_MAC ? 'Запустить приложение macOS по имени (TextEdit, Calculator, Finder, Safari, Google Chrome, Terminal...).' : 'Запустить программу по имени (notepad, calc, explorer, chrome...).', { name: 'string' }, ['name']),
-  fn('close_app', IS_MAC ? 'Закрыть (Quit) приложение macOS по имени. Опасное действие.' : 'Закрыть программу по имени процесса. Опасное действие.', { name: 'string' }, ['name'])
+  fn('open_app', IS_MAC ? 'Запустить приложение macOS по имени (TextEdit, Calculator, Finder, Safari, Google Chrome...).' : 'Запустить программу по имени (notepad, calc, explorer, chrome...).', { name: 'string' }, ['name']),
+  fn('close_app', IS_MAC ? 'Закрыть (Quit) приложение macOS по имени.' : 'Закрыть программу по имени процесса (вежливо, как крестиком).', { name: 'string' }, ['name']),
+  fn('run_command', 'Выполнить безопасную команду и получить вывод (' + (IS_WIN ? 'PowerShell' : 'zsh/bash') + '). Только чтение, навигация, создание папок, копирование/перенос в домашней папке: ' + (IS_WIN ? 'dir, Get-ChildItem, Get-Content, ipconfig, ping, tasklist, mkdir, Copy-Item, Move-Item' : 'ls, cat, df, ps, ping, mkdir, cp, mv') + '. Без ; & > и скриптов.', { command: 'string' }, ['command']),
+  fn('write_file', 'Создать текстовый файл в домашней папке пользователя (полный путь). Существующий файл перед перезаписью уходит в Корзину.', { path: 'string', content: 'string' }, ['path', 'content']),
+  fn('delete_file', 'Удалить файл или папку в Корзину (только внутри домашней папки). Безвозвратно удалять нельзя.', { path: 'string' }, ['path'])
 ];
 function fn(name, description, props, required) {
   const properties = {};
@@ -28,7 +32,7 @@ function fn(name, description, props, required) {
   return { type: 'function', function: { name, description, parameters: { type: 'object', properties, required } } };
 }
 
-/** Классификация риска: 'safe' | 'risky'. Опасное — всегда с подтверждением. */
+/** Классификация риска: 'safe' | 'risky'. Используется, только если «Автономный режим» выключен (тогда рискованное спрашиваем). Жёсткие запреты — в safety.js. */
 function classify(action, args = {}) {
   switch (action) {
     case 'close_app': return { level: 'risky', reason: 'Закроет программу — несохранённое может пропасть.' };
@@ -40,16 +44,24 @@ function classify(action, args = {}) {
       return { level: 'safe' };
     }
     case 'open_url': return /^https?:\/\//i.test(args.url || '') ? { level: 'safe' } : { level: 'risky', reason: 'Ссылка не http(s).' };
+    case 'delete_file': return { level: 'risky', reason: 'Переместит в Корзину: ' + (args.path || '') };
+    case 'write_file': return { level: 'risky', reason: 'Создаст файл: ' + (args.path || '') };
+    case 'run_command': return { level: 'risky', reason: 'Выполнит команду: ' + (args.command || '') };
     default: return { level: 'safe' };
   }
 }
 
+// Все запущенные дочерние процессы — чтобы «Стоп» мог их сразу прибить.
+const children = new Set();
+function killAll() { for (const c of children) { try { c.kill(); } catch {} } children.clear(); try { require('./pc-mac').killAll?.(); } catch {} }
 function run(cmd, args, opts = {}) {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout: 15000, windowsHide: true, ...opts }, (err, stdout, stderr) => {
+    const child = execFile(cmd, args, { timeout: 15000, windowsHide: true, maxBuffer: 2 * 1024 * 1024, ...opts }, (err, stdout, stderr) => {
+      children.delete(child);
       if (err) return reject(new Error((stderr || err.message).toString().trim()));
       resolve(stdout.toString());
     });
+    children.add(child);
   });
 }
 
@@ -87,8 +99,29 @@ const safeName = s => String(s || '').replace(/[^\w.\- ]/g, '').slice(0, 64);
 async function hasXdotool() { try { await run('which', ['xdotool']); return !!process.env.DISPLAY; } catch { return false; } }
 
 /** Выполнить действие. screenshotFn — из main (desktopCapturer). */
-async function execute(action, args = {}, { screenshotFn } = {}) {
+async function execute(action, args = {}, { screenshotFn, safePath } = {}) {
   if (action === 'screenshot') return screenshotFn();
+  if (action === 'wait') { const sec = Math.max(1, Math.min(10, args.seconds | 0 || 1)); await new Promise(r => setTimeout(r, sec * 1000)); return { ok: true, text: `Подождал ${sec} с` }; }
+  if (action === 'delete_file') {
+    const { shell } = require('electron'); const fs = require('fs');
+    if (!fs.existsSync(safePath)) throw new Error('Такого файла нет: ' + safePath);
+    await shell.trashItem(safePath); return { ok: true, text: `В Корзине: ${safePath}` };
+  }
+  if (action === 'write_file') {
+    const { shell } = require('electron'); const fs = require('fs'); const path = require('path');
+    const content = String(args.content ?? '');
+    if (content.length > 1_000_000) throw new Error('Слишком большой файл (больше 1 МБ текста).');
+    fs.mkdirSync(path.dirname(safePath), { recursive: true });
+    if (fs.existsSync(safePath)) { if (fs.statSync(safePath).isDirectory()) throw new Error('По этому пути папка.'); await shell.trashItem(safePath); }
+    fs.writeFileSync(safePath, content, 'utf8'); return { ok: true, text: `Записал ${content.length} симв. в ${safePath}` };
+  }
+  if (action === 'run_command') {
+    const cmd = String(args.command || '');
+    let out;
+    if (IS_WIN) out = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', cmd], { timeout: 20000, cwd: os.homedir() });
+    else out = await run(IS_MAC ? '/bin/zsh' : '/bin/sh', ['-c', cmd], { timeout: 20000, cwd: os.homedir() });
+    out = out.trim(); return { ok: true, text: (out ? out.slice(0, 6000) : '(пусто)') + (out.length > 6000 ? '\n…(обрезано)' : '') };
+  }
   if (action === 'open_url') {
     const { shell } = require('electron');
     await shell.openExternal(args.url); return { ok: true, text: `Открыл ${args.url}` };
@@ -136,4 +169,4 @@ async function executeXdotool(action, a) {
   }
 }
 
-module.exports = { TOOLS, classify, execute, toSendKeys, sendKeysEscape, IS_WIN, IS_MAC };
+module.exports = { TOOLS, classify, execute, killAll, toSendKeys, sendKeysEscape, IS_WIN, IS_MAC };

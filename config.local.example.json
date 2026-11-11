@@ -1,8 +1,4 @@
 {
-  "groqApiKey": "gsk_ВАШ_КЛЮЧ",
-  "model": "openai/gpt-oss-120b",
-  "profiles": [
-    { "provider": "openai", "apiKey": "sk-ВАШ_КЛЮЧ", "model": "gpt-4.1-mini" }
-  ],
-  "_note": "profiles — необязательно. Провайдеры: groq, openai, xai, gemini, anthropic, openrouter, deepseek, mistral, minimax, together, ollama, lmstudio, custom (+ baseUrl)."
+  "_note": "Необязательно и только для разработки. Ключи сюда не кладите и не коммитьте: в программе ключи вводятся в Настройки → «Где думать» и хранятся зашифрованными на компьютере пользователя.",
+  "profiles": []
 }

@@ -1,5 +1,5 @@
-// Автообновление через GitHub Releases (приватный репозиторий craor/GoatDrey-AI).
-// Для приватного репозитория нужен GitHub-токен (PAT) с доступом на чтение: Настройки → Обновления.
+// Автообновление через GitHub Releases (публичный репозиторий craor/GoatDrey-AI). Токен не нужен;
+// если пользователь сам указал GitHub-токен (Настройки → Обновления), он используется — например, чтобы не упираться в лимит запросов.
 // macOS: приложение без подписи Apple, а Squirrel.Mac ставит только подписанные обновления. Поэтому на Mac
 // проверяем последний релиз через GitHub API сами, по кнопке качаем .dmg в «Загрузки» и открываем его.
 const { app, dialog, shell } = require('electron');
@@ -8,7 +8,7 @@ const path = require('path');
 const IS_MAC = process.platform === 'darwin';
 const RELEASES = 'https://github.com/craor/GoatDrey-AI/releases';
 
-const REPO = { provider: 'github', owner: 'craor', repo: 'GoatDrey-AI', private: true };
+const REPO = { provider: 'github', owner: 'craor', repo: 'GoatDrey-AI' };
 let au = null, getWin = () => null, getToken = () => '', state = { status: 'idle' }, busy = false, notifiedVersion = null;
 
 function send(patch) {
@@ -51,15 +51,16 @@ function lazy() {
 
 function humanize(e) {
   const m = String(e?.message || e || '');
-  if (/401|Bad credentials/i.test(m)) return 'GitHub не принял токен. Проверьте его в Настройки → Обновления.';
-  if (/404|Not Found/i.test(m)) return 'Не вижу релизов: репозиторий приватный — нужен токен с доступом к craor/GoatDrey-AI (или релизов ещё нет).';
+  if (/401|Bad credentials/i.test(m)) return 'GitHub не принял токен. Уберите его в Настройки → Обновления — для обновлений он не нужен.';
+  if (/403|rate limit/i.test(m)) return 'GitHub временно ограничил запросы. Попробую позже сам.';
+  if (/404|Not Found/i.test(m)) return 'Не вижу релизов на GitHub (craor/GoatDrey-AI). Попробую позже.';
   if (/latest\.yml/i.test(m)) return 'В последнем релизе нет latest.yml — его надо приложить к релизу.';
   if (/ENOTFOUND|ETIMEDOUT|ECONNRE|net::/i.test(m)) return 'Нет связи с GitHub. Проверьте интернет.';
   return m.split('\n')[0].slice(0, 200);
 }
 
 /* ---------- macOS ---------- */
-const gh = (url, token, accept = 'application/vnd.github+json') => fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: accept, 'User-Agent': 'GoatDrey-AI', 'X-GitHub-Api-Version': '2022-11-28' }, signal: AbortSignal.timeout(20000) });
+const gh = (url, token, accept = 'application/vnd.github+json', ms = 20000) => fetch(url, { headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), Accept: accept, 'User-Agent': 'GoatDrey-AI', 'X-GitHub-Api-Version': '2022-11-28' }, signal: AbortSignal.timeout(ms) });
 const cmpVer = (a, b) => { const x = String(a).replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0), y = String(b).replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0); return 0; };
 let macRelease = null, macFile = null;
 
@@ -94,7 +95,7 @@ async function downloadMac() {
   if (!macRelease?.dmg) { shell.openExternal(macRelease?.url || RELEASES); return; }
   const { dmg, version } = macRelease;
   send({ status: 'downloading', version, percent: 0 });
-  const res = await gh(dmg.url, token, 'application/octet-stream');
+  const res = token ? await gh(dmg.url, token, 'application/octet-stream', 30 * 60000) : await fetch(dmg.browser_download_url, { headers: { 'User-Agent': 'GoatDrey-AI' }, signal: AbortSignal.timeout(30 * 60000) });
   if (!res.ok || !res.body) throw new Error(`Скачивание: HTTP ${res.status}`);
   const total = +res.headers.get('content-length') || dmg.size || 0;
   const file = path.join(app.getPath('downloads'), dmg.name);
@@ -124,14 +125,13 @@ async function downloadMac() {
 async function check({ manual = false } = {}) {
   const sp = supported();
   if (!sp.ok) { send({ status: 'unsupported', error: sp.why }); return state; }
-  const token = (getToken() || '').trim();
-  if (!token) { send({ status: 'no-token', error: 'Нужен GitHub-токен: репозиторий приватный.' }); return state; }
+  const token = (getToken() || '').trim(); // необязателен
   if (busy) return state;
   busy = true;
   try {
     if (IS_MAC) { await checkMac(token); return state; }
     const u = lazy();
-    u.setFeedURL({ ...REPO, token });
+    u.setFeedURL(token ? { ...REPO, token, private: true } : REPO);
     await u.checkForUpdates();
   } catch (e) { send({ status: 'error', error: humanize(e) }); }
   finally { busy = false; }

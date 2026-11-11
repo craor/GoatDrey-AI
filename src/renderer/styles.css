@@ -388,3 +388,12 @@ kbd { font: 500 11px var(--mono); padding: 1px 5px; border: 1px solid var(--bord
 .perm { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-m); background: var(--surface); }
 .perm > span { flex: 1; display: flex; flex-direction: column; }
 .perm.bad { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+
+/* 1.3: журнал шагов агента — сворачивается */
+details.steps { margin: 0 0 10px; }
+details.steps > summary { cursor: pointer; list-style: none; display: inline-flex; align-items: center; gap: 6px; font: 500 12px var(--mono); color: var(--muted); padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--r-m); background: var(--surface); margin-bottom: 6px; }
+details.steps > summary::-webkit-details-marker { display: none; }
+details.steps[open] > summary { color: var(--text, inherit); }
+.step.blocked .ico { color: var(--warning); } .step.stopped .ico { color: var(--danger); }
+.step.blocked { border-style: dashed; }
+.badge.stopped { color: var(--danger); }

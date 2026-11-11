@@ -1,10 +1,9 @@
 // Проверка Groq без Electron: node scripts/smoke-groq.js
-// Ключ берётся из GROQ_API_KEY или config.local.json. В вывод ключ не печатается.
+// Ключ — только из переменной окружения GROQ_API_KEY. В вывод ключ не печатается.
 const path = require('path'), fs = require('fs');
 const groq = require('../src/main/groq');
-const cfgPath = path.join(__dirname, '..', 'config.local.json');
-const key = process.env.GROQ_API_KEY || (fs.existsSync(cfgPath) && JSON.parse(fs.readFileSync(cfgPath, 'utf8')).groqApiKey);
-if (!key) { console.error('Нет ключа: задайте GROQ_API_KEY или config.local.json'); process.exit(1); }
+const key = process.env.GROQ_API_KEY; // только из переменной окружения разработчика, в репозитории ключей нет
+if (!key) { console.error('Пропуск: задайте GROQ_API_KEY'); process.exit(0); }
 (async () => {
   const masked = key.slice(0, 4) + '…' + key.slice(-4);
   const models = await groq.listModels(key);

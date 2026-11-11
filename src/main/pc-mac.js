@@ -6,12 +6,16 @@
 // при первом действии macOS ещё спросит «GoatDrey AI хочет управлять System Events» — нажмите «Разрешить».
 const { execFile } = require('child_process');
 
+const children = new Set();
+function killAll() { for (const c of children) { try { c.kill(); } catch {} } children.clear(); }
 function run(cmd, args, opts = {}) {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout: 15000, ...opts }, (err, stdout, stderr) => {
+    const child = execFile(cmd, args, { timeout: 15000, ...opts }, (err, stdout, stderr) => {
+      children.delete(child);
       if (err) return reject(humanize((stderr || err.message).toString().trim()));
       resolve(stdout.toString());
     });
+    children.add(child);
   });
 }
 
@@ -133,4 +137,4 @@ async function execute(action, a = {}) {
   }
 }
 
-module.exports = { execute, keyScript, appName, humanize, MOUSE_JXA };
+module.exports = { execute, killAll, keyScript, appName, humanize, MOUSE_JXA };

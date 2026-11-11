@@ -5,7 +5,7 @@ const path = require('path');
 const DEFAULT_SETTINGS = {
   theme: 'system',            // light | dark | system
   language: 'ru',
-  apiKey: '',
+  apiKey: '',                 // наследие v1.0, больше не используется (ключи — только в профилях, зашифрованы)
   model: 'openai/gpt-oss-120b',
   fallbackModels: ['openai/gpt-oss-20b', 'qwen/qwen3.8-27b', 'llama-3.3-70b-versatile', 'llama-3.1-8b-instant'],
   visionModel: 'qwen/qwen3.8-27b',
@@ -14,8 +14,8 @@ const DEFAULT_SETTINGS = {
   searchProvider: 'auto',     // auto (Groq browser_search → DDG → Bing → Wikipedia) | groq | duckduckgo | bing
   pcControlEnabled: false,
   pcControlUserOff: false,   // пользователь сам выключил — не включаем автоматически
-  confirmRisky: true,         // всегда true для опасных действий, флаг только для «всех» действий
-  confirmAll: false,
+  autonomous: true,           // «Автономный режим»: без подтверждений, защищают жёсткие правила safety.js
+  confirmAll: false,          // только при выключенном автономном режиме: спрашивать перед каждым действием
   voiceEnabled: true,
   ttsAutoplay: false,
   launchAtStartup: false,
@@ -25,13 +25,17 @@ const DEFAULT_SETTINGS = {
   profiles: [],               // [{id, provider, name, apiKey, baseUrl, model, visionModel, imageModel}]
   activeProfile: null,
   brain: null,                // 'local' | 'api' — ответ на «Где думать?»
-  updateToken: ''             // GitHub PAT для автообновления из приватного репозитория
+  updateToken: '',            // необязательный GitHub-токен (репозиторий публичный, токен не нужен)
+  keysPurged13: false         // 1.3.0: одноразовая чистка профиля 'groq', который старые сборки создавали сами
 };
 const uidp = () => 'p_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
+// Ключи на диске шифруются средствами ОС (Electron safeStorage: DPAPI в Windows, Связка ключей в macOS).
+const ENC = 'enc:v1:';
 class Store {
-  constructor(dir) {
+  constructor(dir, crypto = null) {
     this.dir = dir;
+    this.crypto = crypto && crypto.available() ? crypto : null;
     fs.mkdirSync(dir, { recursive: true });
     this.files = {
       settings: path.join(dir, 'settings.json'),
@@ -43,26 +47,43 @@ class Store {
   _read(file, fallback) {
     try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
   }
+  _dec(v) { if (typeof v !== 'string' || !v.startsWith(ENC)) return v || ''; try { return this.crypto ? this.crypto.decrypt(v.slice(ENC.length)) : ''; } catch { return ''; } }
+  _enc(v) { if (!v || !this.crypto || String(v).startsWith(ENC)) return v || ''; try { return ENC + this.crypto.encrypt(String(v)); } catch { return v; } }
+  _readSettings() {
+    const raw = this._read(this.files.settings, {});
+    if (Array.isArray(raw.profiles)) raw.profiles = raw.profiles.map(p => ({ ...p, apiKey: this._dec(p.apiKey) }));
+    if (raw.updateToken) raw.updateToken = this._dec(raw.updateToken);
+    if (raw.apiKey) raw.apiKey = this._dec(raw.apiKey);
+    return raw;
+  }
+  _writeSettings(s) {
+    const out = { ...s, apiKey: '', updateToken: this._enc(s.updateToken), profiles: (s.profiles || []).map(p => ({ ...p, apiKey: this._enc(p.apiKey) })) };
+    this._write(this.files.settings, out);
+  }
   _write(file, data) {
     const tmp = file + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
     fs.renameSync(tmp, file);
   }
   getSettings() {
-    const s = { ...DEFAULT_SETTINGS, ...this._read(this.files.settings, {}) };
-    if (!this._migrated) { this._migrated = true; if (this._migrate(s)) this._write(this.files.settings, s); }
+    const s = { ...DEFAULT_SETTINGS, ...this._readSettings() };
+    if (!this._migrated) { this._migrated = true; this._migrate(s); this._writeSettings(s); } // заодно шифрует ключи, лежавшие открытым текстом
     return s;
   }
-  /** v1.0 → v1.1: ключ Groq становится профилем; профиль «Локально (Ollama)» есть всегда. */
+  /** v1.0 → v1.1: ключ Groq становится профилем; профиль «Локально (Ollama)» есть всегда.
+   *  v1.3: профиль с id 'groq' старые сборки создавали сами, без пользователя — удаляем его; ключи вводит только пользователь. */
   _migrate(s) {
     let changed = false;
     s.profiles = Array.isArray(s.profiles) ? s.profiles : [];
-    if (s.apiKey && !s.profiles.some(p => p.provider === 'groq' && p.apiKey === s.apiKey)) {
-      s.profiles.unshift({ id: 'groq', provider: 'groq', name: 'Groq', apiKey: s.apiKey, model: s.model || 'openai/gpt-oss-120b', visionModel: s.visionModel || '' });
-      changed = true;
+    if (!s.keysPurged13) {
+      const had = s.profiles.some(p => p.id === 'groq');
+      s.profiles = s.profiles.filter(p => p.id !== 'groq');
+      s.apiKey = ''; s.keysPurged13 = true; changed = true;
+      if (had) { s.activeProfile = null; s.onboarded = false; s.brain = null; }
     }
+    if (s.apiKey) s.apiKey = '';
     if (!s.profiles.some(p => p.provider === 'ollama')) { s.profiles.push({ id: 'local-ollama', provider: 'ollama', name: 'Локально (Ollama)', apiKey: '', model: '', visionModel: '' }); changed = true; }
-    if (!s.activeProfile || !s.profiles.some(p => p.id === s.activeProfile)) { s.activeProfile = (s.profiles.find(p => p.apiKey) || s.profiles[0]).id; changed = true; }
+    if (!s.activeProfile || !s.profiles.some(p => p.id === s.activeProfile)) { s.activeProfile = (s.profiles.find(p => p.provider === 'ollama') || s.profiles[0]).id; changed = true; }
     return changed;
   }
   getProfile(id) { const s = this.getSettings(); return s.profiles.find(p => p.id === (id || s.activeProfile)) || s.profiles[0]; }
@@ -72,53 +93,38 @@ class Store {
     if (i >= 0) { const prev = s.profiles[i]; s.profiles[i] = { ...prev, ...p, apiKey: p.apiKey === undefined || p.apiKey === null ? prev.apiKey : p.apiKey }; }
     else s.profiles.push({ id: p.id || uidp(), apiKey: '', model: '', visionModel: '', ...p });
     const saved = s.profiles[i >= 0 ? i : s.profiles.length - 1];
-    this._syncLegacy(s); this._write(this.files.settings, s);
+    this._writeSettings(s);
     return saved;
   }
   deleteProfile(id) {
     const s = this.getSettings();
     s.profiles = s.profiles.filter(p => p.id !== id);
-    this._syncLegacy(s); this._migrate(s); this._write(this.files.settings, s);
+    this._migrate(s); this._writeSettings(s);
     return true;
   }
   activate(id, model) {
     const s = this.getSettings();
     const p = s.profiles.find(x => x.id === id); if (!p) throw new Error('Нет такого профиля');
     s.activeProfile = id; if (model) p.model = model;
-    this._syncLegacy(s); this._write(this.files.settings, s);
+    this._writeSettings(s);
     return s;
   }
-  // Поля v1.0 (apiKey/model) повторяют активный Groq-профиль — на случай отката на 1.0.x.
-  _syncLegacy(s) { const g = s.profiles.find(p => p.provider === 'groq' && p.apiKey); s.apiKey = g ? g.apiKey : ''; if (g?.model) s.model = g.model; }
   setSettings(patch) {
     const next = { ...this.getSettings(), ...patch };
-    next.confirmRisky = true; // опасные действия подтверждаются всегда — не отключается
-    this._write(this.files.settings, next);
+    this._writeSettings(next);
     return next;
-  }
-  seedFromLocalConfig(configPath) {
-    const cfg = this._read(configPath, null);
-    if (!cfg) return false;
-    const s = this.getSettings();
-    let seeded = false;
-    // Ключ Groq из config.local.json — как в 1.0: подхватывается, только если своего ключа ещё нет.
-    if (cfg.groqApiKey && !s.profiles.some(p => p.provider === 'groq' && p.apiKey)) {
-      const p = this.saveProfile({ id: 'groq', provider: 'groq', name: 'Groq', apiKey: cfg.groqApiKey, model: cfg.model || 'openai/gpt-oss-120b', visionModel: s.visionModel || '' });
-      const cur = this.getSettings();
-      if (!cur.profiles.find(x => x.id === cur.activeProfile)?.apiKey && !cur.brain) this.activate(p.id);
-      seeded = true;
-    }
-    // Необязательно: заранее прописанные профили { provider, apiKey, model, baseUrl, name }.
-    for (const pr of Array.isArray(cfg.profiles) ? cfg.profiles : []) {
-      if (!pr.provider || this.getSettings().profiles.some(p => p.provider === pr.provider && (p.apiKey || '') === (pr.apiKey || '') && (p.baseUrl || '') === (pr.baseUrl || ''))) continue;
-      this.saveProfile({ ...pr, id: undefined }); seeded = true;
-    }
-    return seeded;
   }
   getChats() { return this._read(this.files.chats, { chats: [], folders: ['Работа', 'Личное'] }); }
   saveChats(data) { this._write(this.files.chats, data); return true; }
   getActions() { return this._read(this.files.actions, []); }
   logAction(entry) {
+    // Текстовый журнал рядом с JSON: agent.log (одна строка на действие), открывается любым блокнотом.
+    try {
+      const line = `${new Date().toISOString()}\t${entry.status || ''}\t${entry.action || ''}\t${JSON.stringify(entry.args || {})}\t${String(entry.note || '').split('\n')[0].slice(0, 300)}\n`;
+      const lf = path.join(this.dir, 'agent.log');
+      try { if (fs.statSync(lf).size > 5 * 1024 * 1024) fs.renameSync(lf, lf + '.1'); } catch {}
+      fs.appendFileSync(lf, line, 'utf8');
+    } catch {}
     const list = this.getActions();
     list.unshift({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), at: new Date().toISOString(), ...entry });
     this._write(this.files.actions, list.slice(0, 1000));

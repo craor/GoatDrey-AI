@@ -5,8 +5,7 @@
 const path = require('path'), fs = require('fs'), assert = require('assert');
 const groq = require('../src/main/groq');
 const pc = require('../src/main/pc');
-const cfgPath = path.join(__dirname, '..', 'config.local.json');
-const key = process.env.GROQ_API_KEY || (fs.existsSync(cfgPath) && JSON.parse(fs.readFileSync(cfgPath, 'utf8')).groqApiKey);
+const key = process.env.GROQ_API_KEY; // только из переменной окружения разработчика, в репозитории ключей нет
 const SYS = 'Ты — GoatDrey. Режим «Компьютер»: управляешь ПК (Windows) ТОЛЬКО через функции: open_app, type_text, key_press, mouse_click, mouse_move, scroll, screenshot, open_url, close_app. Других инструментов нет. Чтобы запустить Блокнот — open_app name="notepad", потом сразу type_text.';
 const names = new Set(pc.TOOLS.map(t => t.function.name));
 

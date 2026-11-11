@@ -1,5 +1,5 @@
 // GoatDrey AI — main-процесс Electron.
-const { app, BrowserWindow, ipcMain, Tray, Menu, nativeTheme, dialog, shell, desktopCapturer, screen, nativeImage, systemPreferences } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeTheme, dialog, shell, desktopCapturer, screen, nativeImage, systemPreferences, safeStorage, globalShortcut } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { Store } = require('./store');
@@ -11,6 +11,7 @@ const ja = require('./jsonactions');
 const search = require('./search');
 const pc = require('./pc');
 const updater = require('./updater');
+const safety = require('./safety');
 
 const ROOT = path.join(__dirname, '..', '..');
 const IS_MAC = process.platform === 'darwin';
@@ -19,12 +20,6 @@ const TRAY_PNG = path.join(ROOT, 'assets', 'icon', 'icon-32.png');
 
 let win, tray, store, media;
 const aborters = new Map();
-
-function localConfigPath() {
-  // В собранной версии config.local.json лежит в resources/, в dev — в корне проекта.
-  const candidates = [path.join(process.resourcesPath || '', 'config.local.json'), path.join(ROOT, 'config.local.json'), path.join(path.dirname(process.execPath), 'config.local.json')];
-  return candidates.find(p => { try { return fs.existsSync(p); } catch { return false; } });
-}
 
 function createWindow() {
   const s = store.getSettings();
@@ -184,7 +179,7 @@ function publicProfile(p) {
 function publicSettings() {
   const s = store.getSettings();
   const { apiKey, updateToken, ...rest } = s;
-  return { ...rest, hasLegacyKey: !!apiKey, hasUpdateToken: !!updateToken, profiles: s.profiles.map(publicProfile), platform: process.platform, version: app.getVersion(), dataDir: app.getPath('userData') };
+  return { ...rest, hasUpdateToken: !!updateToken, stopHotkey: stopHotkeyLabel, safetyRules: safety.RULES_RU, profiles: s.profiles.map(publicProfile), platform: process.platform, version: app.getVersion(), dataDir: app.getPath('userData') };
 }
 function presetsPublic() {
   return ORDER.map(id => { const p = PRESETS[id]; return { id, name: p.name, short: p.short, base: p.base, keyUrl: p.keyUrl || '', local: !!p.local, noKey: !!p.noKey, defaultModel: p.defaultModel, note: p.note, image: !!p.image, video: !!p.video, stt: !!p.stt, browserSearch: !!p.browserSearch }; });
@@ -215,6 +210,60 @@ async function takeScreenshot() {
     if (desc) text += `\nОписание экрана (${vt.model}):\n` + desc.trim();
   } catch (e) { text += ' Описание экрана недоступно: ' + e.message; }
   return { ok: true, image, text };
+}
+
+/* ---------- Автономный агент: лимиты, стоп-кнопка, индикатор ---------- */
+const MAX_STEPS = 40, MAX_MINUTES = 15;
+let task = null, taskSeq = 0, indicator = null, stopHotkeyLabel = '';
+function agentStart(userText) {
+  if (task) agentEnd(task.id);
+  task = { id: 't' + (++taskSeq) + Date.now().toString(36), userText, started: Date.now(), steps: 0, stopped: null, screenHint: '' };
+  task.timer = setTimeout(() => emergencyStop(`лимит ${MAX_MINUTES} минут`), MAX_MINUTES * 60000);
+  store.logAction({ action: 'task_start', args: { text: userText.slice(0, 200) }, status: 'done', note: 'Задача начата' });
+  return { id: task.id, maxSteps: MAX_STEPS, maxMinutes: MAX_MINUTES, hotkey: stopHotkeyLabel };
+}
+function agentEnd(id, why) {
+  if (!task || (id && task.id !== id)) return;
+  clearTimeout(task.timer);
+  if (why) { task.stopped = why; win?.webContents.send('agent:stopped', { reason: why }); }
+  store.logAction({ action: 'task_end', args: {}, status: why ? 'stopped' : 'done', note: why ? 'Остановлено: ' + why : `Задача завершена, шагов: ${task.steps}` });
+  task = null; showIndicator(false);
+}
+/** Аварийный стоп: прибить запущенные команды, оборвать запрос к модели, сообщить интерфейсу. */
+function emergencyStop(why) {
+  pc.killAll();
+  for (const c of aborters.values()) { try { c.abort(); } catch {} }
+  if (task) { task.stopped = why; agentEnd(task.id, why); }
+  else win?.webContents.send('agent:stopped', { reason: why });
+  try { if (win && !win.isDestroyed()) { win.show(); win.focus(); } } catch {}
+}
+function registerStopHotkey() {
+  const combos = IS_MAC ? [['Control+Option+Command+.', '⌃⌥⌘ .'], ['Control+Option+Command+Escape', '⌃⌥⌘ Esc']] : [['Control+Alt+Escape', 'Ctrl+Alt+Esc'], ['Control+Alt+Shift+S', 'Ctrl+Alt+Shift+S']];
+  const ok = [];
+  for (const [acc, label] of combos) { try { if (globalShortcut.register(acc, () => emergencyStop('горячие клавиши ' + label))) ok.push(label); } catch {} }
+  stopHotkeyLabel = ok.join(' или ') || '';
+}
+const INDICATOR_HTML = hot => `<!doctype html><meta charset="utf-8"><style>
+html,body{margin:0;background:transparent;font:500 12px/1 "Segoe UI",-apple-system,system-ui,sans-serif;-webkit-user-select:none;user-select:none;overflow:hidden}
+.b{display:flex;align-items:center;gap:8px;margin:4px;padding:7px 8px 7px 12px;border-radius:10px;background:#1C1916;color:#F4F1EA;border:1px solid #FB923C;box-shadow:0 4px 14px rgba(0,0,0,.35);-webkit-app-region:drag}
+i{width:8px;height:8px;border-radius:50%;background:#FB923C;animation:p 1.2s infinite}@keyframes p{50%{opacity:.3}}
+span{flex:1;white-space:nowrap}small{opacity:.6;margin-left:4px}
+button{-webkit-app-region:no-drag;border:0;border-radius:7px;background:#C2410C;color:#fff;font:600 12px/1 inherit;padding:6px 10px;cursor:pointer}button:hover{background:#EA580C}
+</style><div class="b"><i></i><span>GoatDrey управляет компьютером<small>${hot}</small></span><button onclick="location.hash='stop'">Стоп</button></div>`;
+function showIndicator(on) {
+  try {
+    if (!on) { if (indicator && !indicator.isDestroyed()) indicator.hide(); return; }
+    if (!indicator || indicator.isDestroyed()) {
+      const { workArea } = screen.getPrimaryDisplay();
+      indicator = new BrowserWindow({ width: 380, height: 50, x: Math.round(workArea.x + workArea.width / 2 - 190), y: workArea.y + 8, frame: false, transparent: true, resizable: false, movable: true, skipTaskbar: true, focusable: false, alwaysOnTop: true, show: false, hasShadow: false, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, javascript: true } });
+      indicator.setAlwaysOnTop(true, 'screen-saver');
+      indicator.setVisibleOnAllWorkspaces?.(true, { visibleOnFullScreen: true });
+      indicator.setContentProtection(true); // не попадает на скриншоты, которые смотрит модель
+      indicator.webContents.on('did-navigate-in-page', (e, url) => { if (url.endsWith('#stop')) emergencyStop('кнопка «Стоп» на индикаторе'); });
+      indicator.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(INDICATOR_HTML(stopHotkeyLabel ? '· ' + stopHotkeyLabel : '')));
+    }
+    if (!indicator.isVisible()) indicator.showInactive();
+  } catch (e) { console.warn('indicator:', e.message); }
 }
 
 function registerIpc() {
@@ -410,22 +459,40 @@ function registerIpc() {
     return true;
   });
   ipcMain.handle('app:relaunch', () => { app.relaunch(); app.exit(0); });
-  ipcMain.handle('pc:exec', async (e, { action, args, confirmed }) => {
+  /* --- Агент: задача, лимиты, правила, стоп --- */
+  ipcMain.handle('agent:start', (e, { userText } = {}) => agentStart(String(userText || '')));
+  ipcMain.handle('agent:end', (e, id) => { agentEnd(id); return true; });
+  ipcMain.handle('agent:stop', () => { emergencyStop('кнопка «Стоп»'); return true; });
+  ipcMain.handle('agent:info', () => ({ hotkey: stopHotkeyLabel, rules: safety.RULES_RU, maxSteps: MAX_STEPS, maxMinutes: MAX_MINUTES }));
+  ipcMain.handle('pc:exec', async (e, { action, args = {}, confirmed, taskId }) => {
     const s = store.getSettings();
     if (!s.pcControlEnabled) { store.logAction({ action, args, status: 'blocked', note: 'Управление ПК выключено' }); throw new Error('Управление ПК выключено в настройках'); }
+    const t = task && task.id === taskId ? task : null;
+    if (!t) return { ok: false, stopped: true, text: 'Задача остановлена.' };
+    if (t.stopped) return { ok: false, stopped: true, text: 'Остановлено: ' + t.stopped };
+    if (++t.steps > MAX_STEPS) { agentEnd(t.id, `лимит ${MAX_STEPS} шагов`); return { ok: false, stopped: true, text: `Достигнут лимит ${MAX_STEPS} шагов на задачу — остановился.` }; }
+    if (Date.now() - t.started > MAX_MINUTES * 60000) { agentEnd(t.id, `лимит ${MAX_MINUTES} минут`); return { ok: false, stopped: true, text: `Задача идёт дольше ${MAX_MINUTES} минут — остановился.` }; }
+    // Жёсткие правила — всегда, в любом режиме. Нарушение не спрашиваем: пропускаем и объясняем.
+    const verdict = safety.check(action, args, { userText: t.userText, screenHint: t.screenHint });
+    const logArgs = action === 'type_text' && !verdict.ok ? { text: '•••' } : action === 'write_file' ? { path: args.path, chars: String(args.content || '').length } : args;
+    if (!verdict.ok) { store.logAction({ action, args: logArgs, status: 'blocked', note: verdict.reason }); return { ok: false, blocked: true, text: verdict.reason }; }
     const risk = pc.classify(action, args);
-    if ((risk.level === 'risky' || s.confirmAll) && !confirmed) { store.logAction({ action, args, status: 'blocked', note: 'Нет подтверждения' }); throw new Error('Нужно подтверждение'); }
+    if (!s.autonomous && (risk.level === 'risky' || s.confirmAll) && !confirmed) { store.logAction({ action, args: logArgs, status: 'blocked', note: 'Нет подтверждения' }); throw new Error('Нужно подтверждение'); }
     if (IS_MAC && NEEDS_ACCESSIBILITY.has(action) && !macPermissions().accessibility) {
       try { systemPreferences.isTrustedAccessibilityClient(true); } catch {} // покажет системное окно с кнопкой «Открыть настройки»
-      store.logAction({ action, args, status: 'error', risk: risk.level, note: 'Нет разрешения «Универсальный доступ»' });
+      store.logAction({ action, args: logArgs, status: 'error', risk: risk.level, note: 'Нет разрешения «Универсальный доступ»' });
       throw new Error(ACCESS_MSG);
     }
+    showIndicator(true);
     try {
-      const r = await pc.execute(action, args, { screenshotFn: takeScreenshot });
-      store.logAction({ action, args: action === 'type_text' && risk.level === 'risky' ? { text: '•••' } : args, status: r.simulated ? 'simulated' : 'done', risk: risk.level, note: r.text });
+      const r = await pc.execute(action, args, { screenshotFn: takeScreenshot, safePath: verdict.path });
+      if (t.stopped) return { ok: false, stopped: true, text: 'Остановлено: ' + t.stopped };
+      if (action === 'screenshot') t.screenHint = String(r.text || '').slice(0, 3000);
+      store.logAction({ action, args: logArgs, status: r.simulated ? 'simulated' : 'done', risk: risk.level, note: r.text });
       return r;
     } catch (err) {
-      store.logAction({ action, args, status: 'error', risk: risk.level, note: err.message });
+      store.logAction({ action, args: logArgs, status: t.stopped ? 'stopped' : 'error', risk: risk.level, note: err.message });
+      if (t.stopped) return { ok: false, stopped: true, text: 'Остановлено: ' + t.stopped };
       throw err;
     }
   });
@@ -448,7 +515,7 @@ function registerIpc() {
   ipcMain.handle('update:openRelease', () => updater.openRelease());
   ipcMain.handle('update:setToken', (e, token) => {
     const t = String(token || '').trim();
-    if (t && !/^(gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}$/.test(t)) return { ok: false, error: 'Это не похоже на GitHub-токен (ghp_… или github_pat_…).' };
+    if (t && !/^(gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}$/.test(t)) return { ok: false, error: 'Это не похоже на GitHub-токен.' };
     store.setSettings({ updateToken: t });
     return { ok: true, settings: publicSettings() };
   });
@@ -456,11 +523,12 @@ function registerIpc() {
 
 if (process.env.GD_USERDATA) app.setPath('userData', process.env.GD_USERDATA);
 app.whenReady().then(() => {
-  store = new Store(app.getPath('userData'));
+  // Ключи провайдеров храним зашифрованными средствами ОС. В сборках никаких ключей нет — их вводит сам пользователь.
+  const crypto = { available: () => { try { return safeStorage.isEncryptionAvailable(); } catch { return false; } }, encrypt: v => safeStorage.encryptString(v).toString('base64'), decrypt: v => safeStorage.decryptString(Buffer.from(v, 'base64')) };
+  store = new Store(app.getPath('userData'), crypto);
   media = new Media(app.getPath('userData'));
-  const cfg = localConfigPath();
-  if (cfg) store.seedFromLocalConfig(cfg);
   registerIpc();
+  registerStopHotkey();
   createMacMenu();
   if (IS_MAC && !app.isPackaged) { try { app.dock.setIcon(ICON_PNG); } catch {} }
   createWindow();
@@ -468,4 +536,5 @@ app.whenReady().then(() => {
   updater.init({ getWin: () => win, getToken: () => store.getSettings().updateToken });
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
+app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch {} });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

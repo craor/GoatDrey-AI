@@ -34,10 +34,14 @@ contextBridge.exposeInMainWorld('gd', {
   search: q => inv('search:query', q),
   pc: {
     classify: (action, args) => inv('pc:classify', { action, args }),
-    exec: (action, args, confirmed) => inv('pc:exec', { action, args, confirmed }),
+    exec: (action, args, confirmed, taskId) => inv('pc:exec', { action, args, confirmed, taskId }),
     deny: (action, args) => inv('pc:deny', { action, args }),
     log: () => inv('actions:get'), clearLog: () => inv('actions:clear'),
     permissions: () => inv('pc:permissions'), openPrefs: kind => inv('pc:openPrefs', kind)
+  },
+  agent: {
+    start: userText => inv('agent:start', { userText }), end: id => inv('agent:end', id), stop: () => inv('agent:stop'), info: () => inv('agent:info'),
+    onStopped: cb => ipcRenderer.on('agent:stopped', (e, d) => cb(d))
   },
   relaunch: () => inv('app:relaunch'),
   file: { export: (name, content, ext) => inv('file:export', { name, content, ext }) },
