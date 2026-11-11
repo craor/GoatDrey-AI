@@ -1,0 +1,36 @@
+// Иконки: тонкое перо 1.5px, квадратные окончания — как пометки карандашом на чертеже.
+window.ICONS = {
+  plus: '<path d="M8 3v10M3 8h10"/>',
+  search: '<circle cx="7" cy="7" r="4.25"/><path d="M10.2 10.2 13.5 13.5"/>',
+  chat: '<path d="M2.75 3.75h10.5v7h-6l-3 2.5v-2.5h-1.5z"/>',
+  frame: '<rect x="2.25" y="3.25" width="11.5" height="9.5" rx="1"/><path d="M2.5 11 6 7.5l3 3 1.5-1.5 3 3"/><circle cx="10.75" cy="6" r="1"/>',
+  stack: '<path d="M3 4.5h10M3 8h10M3 11.5h6"/>',
+  log: '<path d="M4.5 2.75h7v10.5h-7zM6.5 5.5h3M6.5 8h3M6.5 10.5h1.5"/>',
+  gear: '<circle cx="8" cy="8" r="2"/><path d="M8 1.75v2M8 12.25v2M1.75 8h2M12.25 8h2M3.6 3.6l1.4 1.4M11 11l1.4 1.4M3.6 12.4 5 11M11 5l1.4-1.4"/>',
+  moon: '<path d="M12.5 9.5A5 5 0 0 1 6.5 3.5a5 5 0 1 0 6 6z"/>',
+  sun: '<circle cx="8" cy="8" r="2.75"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M3.4 12.6l1-1M11.6 4.4l1-1"/>',
+  system: '<rect x="2.25" y="3" width="11.5" height="8" rx="1"/><path d="M6 13.5h4M8 11v2.5"/>',
+  sidebar: '<rect x="2.25" y="2.75" width="11.5" height="10.5" rx="1"/><path d="M6 2.75v10.5"/>',
+  globe: '<circle cx="8" cy="8" r="5.5"/><path d="M2.5 8h11M8 2.5c1.8 1.6 2.5 3.5 2.5 5.5S9.8 11.9 8 13.5C6.2 11.9 5.5 10 5.5 8S6.2 4.1 8 2.5z"/>',
+  cursor: '<path d="M3.5 2.5 12 7.2l-3.8 1-1.3 3.8z"/><path d="M8.6 9.4l2.6 3.1"/>',
+  more: '<circle cx="3.75" cy="8" r=".6" fill="currentColor"/><circle cx="8" cy="8" r=".6" fill="currentColor"/><circle cx="12.25" cy="8" r=".6" fill="currentColor"/>',
+  clip: '<path d="M10.5 5 6 9.5a1.4 1.4 0 0 0 2 2l5-5a2.8 2.8 0 0 0-4-4l-5 5a4.2 4.2 0 0 0 6 6l3.5-3.5"/>',
+  mic: '<rect x="6" y="2.25" width="4" height="7.5" rx="2"/><path d="M3.75 7.75a4.25 4.25 0 0 0 8.5 0M8 12v2"/>',
+  arrow: '<path d="M3 8h9.5M9 4.5 12.5 8 9 11.5"/>',
+  stop: '<rect x="4.5" y="4.5" width="7" height="7" rx="1" fill="currentColor"/>',
+  copy: '<rect x="5.25" y="5.25" width="8" height="8" rx="1"/><path d="M10.75 5.25V2.75h-8v8h2.5"/>',
+  speaker: '<path d="M3 6h2.5L9 3v10L5.5 10H3z"/><path d="M11.25 5.75a3 3 0 0 1 0 4.5"/>',
+  retry: '<path d="M12.75 8a4.75 4.75 0 1 1-1.5-3.45"/><path d="M12.75 2.5v2.75H10"/>',
+  pin: '<path d="M6 2.5h4l-.5 4 2 2v1H4.5v-1l2-2zM8 9.5v4"/>',
+  folder: '<path d="M2.25 4.25h4l1.5 1.5h6v7H2.25z"/>',
+  download: '<path d="M8 2.5v8M4.75 7.25 8 10.5l3.25-3.25M3 13.25h10"/>',
+  trash: '<path d="M3 4.5h10M6.25 4.5V2.75h3.5V4.5M4.5 4.5l.6 8.75h5.8l.6-8.75"/>',
+  pencil: '<path d="M10.5 2.75 13.25 5.5 6 12.75H3.25V10z"/>',
+  check: '<path d="M3.25 8.25 6.5 11.5l6.25-7"/>',
+  x: '<path d="M4 4l8 8M12 4l-8 8"/>',
+  shield: '<path d="M8 2 13 4v4c0 3-2.2 5-5 6-2.8-1-5-3-5-6V4z"/>',
+  camera: '<path d="M2.25 5h3l1.25-1.75h3L10.75 5h3v7.75H2.25z"/><circle cx="8" cy="8.75" r="2.25"/>',
+  key: '<circle cx="5.25" cy="10.75" r="2.5"/><path d="M7 9 12.75 3.25M10.75 5.25l1.5 1.5"/>'
+};
+window.icon = (n, s = 16) => `<svg width="${s}" height="${s}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" stroke-linejoin="round" aria-hidden="true">${window.ICONS[n] || ''}</svg>`;
+window.hydrateIcons = (root = document) => root.querySelectorAll('[data-i]').forEach(el => { if (!el.firstChild) el.innerHTML = window.icon(el.dataset.i); });

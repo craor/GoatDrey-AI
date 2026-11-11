@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ru" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob: https:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; connect-src 'self'">
+  <title>GoatDrey AI</title>
+  <link rel="icon" href="../../assets/icon/icon-64.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app" id="app">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <img class="brand-mark" src="../../assets/icon/icon-64.png" alt="">
+        <div class="brand-name">Goat<i>Drey</i></div>
+        <div class="brand-sub" id="brandSub">верстак</div>
+      </div>
+      <button class="new-chat" id="newChat"><span data-i="plus"></span>Новый чат <kbd>Ctrl N</kbd></button>
+      <div class="side-search"><span data-i="search"></span><input id="searchChats" placeholder="Поиск по чатам" spellcheck="false"></div>
+      <nav class="nav" id="nav">
+        <button data-view="chat" class="active"><span data-i="chat"></span>Чаты<span class="count" id="chatCount"></span></button>
+        <button data-view="media"><span data-i="frame"></span>Фото и видео</button>
+        <button data-view="templates"><span data-i="stack"></span>Шаблоны</button>
+        <button data-view="log"><span data-i="log"></span>Журнал действий</button>
+      </nav>
+      <div class="folders" id="folders"></div>
+      <div class="chat-list" id="chatList"></div>
+      <div class="side-foot">
+        <button class="icon-btn" data-view="settings" id="openSettings" title="Настройки (Ctrl ,)"><span data-i="gear"></span></button>
+        <button class="icon-btn" id="themeBtn" title="Тема"><span data-i="moon"></span></button>
+        <div class="grow"></div>
+        <div class="key-state" id="keyState"><i class="dot"></i><span>ключ</span></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button class="icon-btn" id="toggleSide" title="Скрыть панель (Ctrl B)"><span data-i="sidebar"></span></button>
+        <div class="title" id="title" spellcheck="false">Новый чат</div>
+        <div class="segmented" id="modes">
+          <div class="thumb"></div>
+          <button data-mode="chat" class="on" title="Обычный разговор"><span data-i="chat"></span><span>Чат</span></button>
+          <button data-mode="search" title="Сначала ищет в интернете"><span data-i="globe"></span><span>Поиск</span></button>
+          <button data-mode="desktop" title="Управляет этим компьютером"><span data-i="cursor"></span><span>Компьютер</span></button>
+        </div>
+        <select class="select" id="modelPick" title="Модель"></select>
+        <button class="icon-btn" id="chatMenuBtn" title="Действия с чатом"><span data-i="more"></span></button>
+      </header>
+
+      <section class="view" id="view-chat">
+        <div class="empty" id="emptyState">
+          <div class="empty-inner">
+            <h1 id="greet">Доброе утро. <em>С чего начнём?</em></h1>
+            <p class="lead" id="greetLead">Стол чистый, чай налит. Спросите что угодно — или выберите заготовку.</p>
+            <div class="starters" id="starters"></div>
+            <div class="tip"><span><kbd>/</kbd> шаблоны</span><span><kbd>Ctrl K</kbd> поиск по чатам</span><span><kbd>Shift Enter</kbd> новая строка</span></div>
+          </div>
+        </div>
+        <div class="thread hidden" id="thread"><div class="thread-inner" id="threadInner"></div></div>
+        <div class="composer-wrap">
+          <div class="mode-note hidden" id="modeNote"></div>
+          <div class="composer" id="composer">
+            <div class="attach-row hidden" id="attachRow"></div>
+            <textarea id="input" rows="1" placeholder="Напишите сообщение…"></textarea>
+            <div class="composer-bar">
+              <button class="icon-btn" id="attachBtn" title="Прикрепить файл или картинку"><span data-i="clip"></span></button>
+              <button class="icon-btn" id="micBtn" title="Голосовой ввод"><span data-i="mic"></span></button>
+              <button class="icon-btn" id="tplBtn" title="Шаблоны (/)"><span data-i="stack"></span></button>
+              <span class="hint" id="hint">Enter — отправить</span>
+              <button class="send" id="sendBtn" disabled><span>Отправить</span><span data-i="arrow"></span></button>
+            </div>
+          </div>
+          <input type="file" id="fileInput" multiple class="hidden">
+        </div>
+      </section>
+
+      <section class="view page hidden" id="view-media"></section>
+      <section class="view page hidden" id="view-templates"></section>
+      <section class="view page hidden" id="view-log"></section>
+      <section class="view page hidden" id="view-settings"></section>
+    </main>
+  </div>
+  <div class="toasts" id="toasts"></div>
+  <script src="md.js"></script>
+  <script src="icons.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

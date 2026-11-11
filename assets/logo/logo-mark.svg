@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- Вторичный знак GoatDrey: монограмма «GD» пером. Иконка ОС — фото пользователя. -->
+  <rect x="3" y="3" width="58" height="58" rx="9" stroke="#1C1917" stroke-width="2.5"/>
+  <path d="M29 22.5a10 10 0 1 0 1.5 15.5V31h-7" stroke="#1C1917" stroke-width="3" stroke-linecap="square"/>
+  <path d="M35 22h4.5a10 10 0 0 1 0 20H35z" stroke="#1C1917" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M15 49h34" stroke="#C2410C" stroke-width="3" stroke-linecap="round"/>
+</svg>

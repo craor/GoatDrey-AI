@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 48">
+  <style>.w{font:600 30px 'IBM Plex Sans',sans-serif;letter-spacing:-.5px}</style>
+  <text x="0" y="34" class="w" fill="#1C1917">Goat<tspan fill="#C2410C">Drey</tspan></text>
+  <path d="M84 42h66" stroke="#C2410C" stroke-width="2" stroke-linecap="round"/>
+</svg>

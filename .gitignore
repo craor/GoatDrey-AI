@@ -1,0 +1,31 @@
+# Секреты — никогда не коммитить
+config.local.json
+.env
+.env*
+!config.local.example.json
+*.pem
+*.key
+
+# Сборка и зависимости
+node_modules/
+release/
+dist/
+out/
+win-unpacked/
+builder-debug.yml
+*.exe
+*.blockmap
+*.zip
+
+# Данные пользователя
+media/
+userData/
+user-data/
+settings.json
+chats.json
+actions.log.json
+templates.json
+
+*.log
+.DS_Store
+Thumbs.db
